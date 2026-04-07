@@ -8,6 +8,12 @@ function mod:OnNewRoom()
     Encoders.OnNewRoom(player)
 end
 
+---@param entity Entity
+---@param amount number
+---@param flags DamageFlag
+---@param source EntityRef
+---@param countdown integer
+
 mod:AddCallback(ModCallbacks.MC_POST_NEW_ROOM, mod.OnNewRoom)
 
 function mod:OnDamage(entity, amount, flags, source, countdown)

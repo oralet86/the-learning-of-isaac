@@ -23,16 +23,23 @@ local DISPLAY_SHADOW  = (1 << 1)
 -- LEFT1 = 1<<DoorSlot.LEFT1, ... (secondary doors for large rooms)
 -- We only need direction; treat LEFT0/LEFT1 the same, etc.
 -- We avoid referencing DoorSlot values directly (they exist as enums), and just test bits from 0..7.
+---@param bit_index integer
+---@return integer
 local function door_mask(bit_index)
     return (1 << bit_index)
 end
 
+---@param idx integer
+---@return integer, integer
 local function grid_xy(idx)
     local x = idx % GRID_W
     local y = idx // GRID_W
     return x, y
 end
 
+---@param a integer
+---@param b integer
+---@return integer
 local function manhattan(a, b)
     local ax, ay = grid_xy(a)
     local bx, by = grid_xy(b)
@@ -54,6 +61,13 @@ local function clear_out()
     end
 end
 
+---@param cell_idx integer
+---@param known number
+---@param room_type number
+---@param visited number
+---@param current_room number
+---@param has_unopened_door number
+---@param dist number
 local function set_cell(cell_idx, known, room_type, visited, current_room, has_unopened_door, dist)
     local base = (cell_idx * FEATS_PER_CELL) + 1
     if known == 0 then
@@ -75,6 +89,9 @@ local function set_cell(cell_idx, known, room_type, visited, current_room, has_u
     out[base + 5] = dist
 end
 
+---@param level Level
+---@param grid_index integer
+---@return RoomDescriptor|nil
 local function get_room_desc(level, grid_index)
     local ok, desc = pcall(function()
         return level:GetRoomByIdx(grid_index)
@@ -89,6 +106,8 @@ local function get_room_desc(level, grid_index)
     return desc
 end
 
+---@param desc RoomDescriptor
+---@return boolean
 local function is_known(desc)
     -- "Known" if it appears on minimap as visible OR shadow, or if visited.
     -- DisplayFlags: Visible (1<<0), Room Shadow (1<<1) :contentReference[oaicite:3]{index=3}
@@ -99,15 +118,22 @@ local function is_known(desc)
     return ((flags & DISPLAY_VISIBLE) ~= 0) or ((flags & DISPLAY_SHADOW) ~= 0)
 end
 
+---@param desc RoomDescriptor
+---@return boolean
 local function is_visited(desc)
     return (desc.VisitedCount ~= nil and desc.VisitedCount > 0)
 end
 
+---@param desc RoomDescriptor
+---@return integer
 local function safe_index(desc)
     -- SafeGridIndex is recommended for stable indexing across shapes :contentReference[oaicite:4]{index=4}
     return desc.SafeGridIndex or desc.GridIndex
 end
 
+---@param level Level
+---@param desc RoomDescriptor
+---@return boolean
 local function has_unopened_exit(level, desc)
     -- We define "has_unopened_door" as: this room has a valid door position
     -- that leads to a room that exists but has not been visited yet.
@@ -154,6 +180,8 @@ local function has_unopened_exit(level, desc)
     return false
 end
 
+---@param _player EntityPlayer
+---@return number[]
 function C.Encode(_player)
     clear_out()
 

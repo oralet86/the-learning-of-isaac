@@ -6,6 +6,8 @@ local C = {}
 -- 2: keys
 -- 5: golden_bomb (0/1)
 -- 4: golden_key (0/1)
+---@param player EntityPlayer
+---@return number[]
 function C.Encode(player)
     local feats = {}
 

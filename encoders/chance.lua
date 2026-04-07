@@ -1,6 +1,8 @@
 local C = {}
 local game = Game()
 
+---@param collectible CollectibleType
+---@return boolean
 local function anyPlayerHasCollectible(collectible)
     for i = 0, game:GetNumPlayers() - 1 do
         local player = game:GetPlayer(i)
@@ -11,6 +13,8 @@ local function anyPlayerHasCollectible(collectible)
     return false
 end
 
+---@param trinket TrinketType
+---@return boolean
 local function anyPlayerHasTrinket(trinket)
     for i = 0, game:GetNumPlayers() - 1 do
         local player = game:GetPlayer(i)
@@ -21,6 +25,8 @@ local function anyPlayerHasTrinket(trinket)
     return false
 end
 
+---@param level Level
+---@return boolean
 local function canDealSpawn(level)
     local stage = level:GetStage()
 
@@ -34,6 +40,8 @@ local function canDealSpawn(level)
     return true
 end
 
+---@param player EntityPlayer
+---@return number[]
 function C.Encode(player)
     local level = game:GetLevel()
     local room = level:GetCurrentRoom()

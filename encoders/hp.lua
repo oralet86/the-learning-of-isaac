@@ -15,12 +15,18 @@ C.HP_SLOTS = 12
 
 local holy_mantle_available = false
 
+---@return number[]
 local function initHPFeatures()
     local hp = {}
     for i = 1, 16 do hp[i] = 0.0 end
     return hp
 end
 
+---@param hp number[]
+---@param idx integer
+---@param count integer
+---@param code integer
+---@return integer
 local function fillSlots(hp, idx, count, code)
     local used = 0
     while count > 0 and idx <= C.HP_SLOTS do
@@ -32,6 +38,7 @@ local function fillSlots(hp, idx, count, code)
     return used
 end
 
+---@param player EntityPlayer
 function C.OnNewRoom(player)
     if player:HasCollectible(CollectibleType.COLLECTIBLE_HOLY_MANTLE) or
         player:GetEffects():GetCollectibleEffectNum(CollectibleType.COLLECTIBLE_HOLY_MANTLE) > 0 then
@@ -47,6 +54,8 @@ function C.OnDamage()
     end
 end
 
+---@param player EntityPlayer
+---@return number[]
 function C.Encode(player)
     local hp_feat = initHPFeatures()
 

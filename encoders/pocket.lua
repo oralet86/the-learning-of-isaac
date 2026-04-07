@@ -4,11 +4,15 @@ local game = Game()
 -- An offset to Pill IDs to prevent them from overlapping with Card IDs.
 local PILL_ID_OFFSET = 100
 
+---@param player EntityPlayer
+---@return number[]
 function P.Encode(player)
     local pocket_vector = { 0.0, 0.0 }
     local item_pool = game:GetItemPool()
 
     -- Helper function to get the standardized ID of an item in a slot
+    ---@param slot_index integer
+    ---@return number
     local function getSlotContent(slot_index)
         -- 1. Check for Cards/Runes
         local card_id = player:GetCard(slot_index)

@@ -17,6 +17,7 @@ local last_collectible_count = -1
 local last_queue_empty = true
 local last_queued_collectible_id = 0
 
+---@param player EntityPlayer
 local function full_resync(player)
     -- Clear cache
     for i = 1, COLLECTIBLE_VEC_LEN do
@@ -32,6 +33,7 @@ local function full_resync(player)
     end
 end
 
+---@param player EntityPlayer
 local function update_collectible_cache(player)
     local count = player:GetCollectibleCount()
     local queue_empty = player:IsItemQueueEmpty()
@@ -80,12 +82,16 @@ for i = 1, OUT_LEN do
     out[i] = 0.0
 end
 
+---@param x number
+---@return number
 local function clamp01(x)
     if x < 0 then return 0.0 end
     if x > 1 then return 1.0 end
     return x
 end
 
+---@param player EntityPlayer
+---@return number[]
 function C.Encode(player)
     update_collectible_cache(player)
 

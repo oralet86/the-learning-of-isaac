@@ -1,6 +1,8 @@
 local C = {}
 local game = Game()
 
+---@param player EntityPlayer
+---@return integer
 local function countLocustsForPlayer(player)
     -- Abyss locusts are familiars with variant ABYSS_LOCUST.
     -- We filter by owning player via GetPtrHash.
@@ -25,6 +27,7 @@ local function countLocustsForPlayer(player)
     return count
 end
 
+---@return number[]
 local function initFeatures()
     local f = {}
     for i = 1, 3 do
@@ -33,6 +36,8 @@ local function initFeatures()
     return f
 end
 
+---@param player EntityPlayer
+---@return number[]
 function C.Encode(player)
     -- Layout:
     -- 1: num_blue_flies

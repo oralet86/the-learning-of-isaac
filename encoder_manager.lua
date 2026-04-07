@@ -53,12 +53,18 @@ for _, name in ipairs(encoder_order) do
 end
 
 
+---@param player EntityPlayer
 function M.OnNewRoom(player)
     for i = 1, #enabled_on_new_room do
         enabled_on_new_room[i](player)
     end
 end
 
+---@param player EntityPlayer
+---@param amount number
+---@param flags DamageFlag
+---@param source EntityRef
+---@param countdown integer
 function M.OnDamage(player, amount, flags, source, countdown)
     for i = 1, #enabled_on_damage do
         enabled_on_damage[i](player, amount, flags, source, countdown)
@@ -67,6 +73,8 @@ end
 
 local flat = {}
 
+---@param player EntityPlayer
+---@return number[]
 function M.EncodeAll(player)
     local n = 0
 

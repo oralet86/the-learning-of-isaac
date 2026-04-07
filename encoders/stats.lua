@@ -1,5 +1,7 @@
 local S = {}
 
+---@param player EntityPlayer
+---@return number[]
 function S.Encode(player)
     local stats = {}
 

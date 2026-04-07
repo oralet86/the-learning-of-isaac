@@ -1,6 +1,8 @@
 # Other stuff
 .vscode
 .luarc.json
+.claude
+CLAUDE.md
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
