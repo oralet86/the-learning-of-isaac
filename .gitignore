@@ -1,3 +1,7 @@
+# Other stuff
+.vscode
+.luarc.json
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
