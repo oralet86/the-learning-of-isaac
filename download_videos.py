@@ -1,14 +1,15 @@
-import yt_dlp
 import os
-import sys
-import time
 import random
 import re
+import sys
+import time
+
 from tqdm import tqdm
+import yt_dlp
 
 from constants import DOWNLOAD_DIR
 
-RATE_LIMIT = int(os.environ.get("RATE_LIMIT", 4 * 1024 * 1024))
+RATE_LIMIT = int(os.environ.get("RATE_LIMIT", str(4 * 1024 * 1024)))
 
 PLAYLISTS_FILE = "playlists.txt"
 DOWNLOAD_DIR_STR = str(DOWNLOAD_DIR)
@@ -121,14 +122,20 @@ def main() -> None:
             tqdm.write(f"  {raw_title}: 0 videos")
             continue
 
-        tqdm.write(f"  {raw_title}  ->  {DOWNLOAD_DIR}/{folder}/  ({len(entries)} videos)")
+        tqdm.write(
+            f"  {raw_title}  ->  {DOWNLOAD_DIR}/{folder}/  ({len(entries)} videos)"
+        )
 
         failures: list[tuple[str, str, str]] = []
         desc = folder[:25].ljust(25)
 
-        for entry in tqdm(entries, desc=desc, unit="vid", leave=False, dynamic_ncols=True):
+        for entry in tqdm(
+            entries, desc=desc, unit="vid", leave=False, dynamic_ncols=True
+        ):
             video_id = entry["id"]
-            video_url = entry.get("url") or f"https://www.youtube.com/watch?v={video_id}"
+            video_url = (
+                entry.get("url") or f"https://www.youtube.com/watch?v={video_id}"
+            )
             video_title = entry.get("title", video_id)
 
             if download_one(video_url, folder):
@@ -146,7 +153,9 @@ def main() -> None:
         tqdm.write(f"\nRetrying {len(all_failed)} failed video(s)...\n")
         still_failed = 0
 
-        for url, title, folder in tqdm(all_failed, desc="Retry  ", unit="vid", dynamic_ncols=True):
+        for url, title, folder in tqdm(
+            all_failed, desc="Retry  ", unit="vid", dynamic_ncols=True
+        ):
             if download_one(url, folder):
                 pass
             else:

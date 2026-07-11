@@ -2,10 +2,10 @@
 """Interactive tkinter viewer for recorded runs (mp4 + keys.json + meta.json)."""
 
 import json
+from pathlib import Path
 import subprocess
 import sys
 import tkinter as tk
-from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageTk
@@ -33,6 +33,7 @@ def load_frames(video_path: str, width: int, height: int) -> np.ndarray | None:
         ],
         capture_output=True,
         timeout=30,
+        check=False,
     )
     if proc.returncode != 0:
         return None
@@ -70,7 +71,7 @@ class Viewer:
             sys.exit("Failed to load video frames.")
 
         with open(self.keys_path) as f:
-            self.keys_raw = json.load(f)
+            self.keys_raw: list[list[str]] = json.load(f)
 
         self.num_frames = self.frames.shape[0]
         self.display_w = self.src_width * SCALE
@@ -98,14 +99,14 @@ class Viewer:
         ctrl = tk.Frame(self.root, bg=BG_COLOR, pady=4)
         ctrl.pack(side=tk.TOP, fill=tk.X)
 
-        btn_opts = dict(
-            bg="#2d2d5e",
-            fg="white",
-            relief=tk.FLAT,
-            activebackground="#4d4d8e",
-            padx=8,
-            pady=2,
-        )
+        btn_opts = {
+            "bg": "#2d2d5e",
+            "fg": "white",
+            "relief": tk.FLAT,
+            "activebackground": "#4d4d8e",
+            "padx": 8,
+            "pady": 2,
+        }
 
         tk.Button(ctrl, text="|<", command=self.goto_first, **btn_opts).pack(
             side=tk.LEFT, padx=2
@@ -213,7 +214,6 @@ class Viewer:
         self.canvas.delete("all")
         self.canvas.create_image(0, 0, anchor=tk.NW, image=self._photo)
 
-        direction_str = "▶" if self.direction == 1 else "◀"
         self.frame_label.config(
             text=f"Frame: {self.current_frame + 1} / {self.num_frames}"
         )
@@ -304,7 +304,7 @@ class Viewer:
         interval = int(1000 / max(1, self.fps))
         self.play_timer = self.root.after(interval, self._tick)
 
-    def _set_fps(self, event=None):
+    def _set_fps(self, _event=None):
         try:
             val = int(self.fps_var.get())
             if 1 <= val <= 120:

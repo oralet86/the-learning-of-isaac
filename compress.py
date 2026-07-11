@@ -1,7 +1,8 @@
 import os
+from pathlib import Path
 import subprocess
 import sys
-from pathlib import Path
+
 from tqdm import tqdm
 
 from constants import (
@@ -27,7 +28,7 @@ def find_videos(root: Path) -> list[Path]:
     return videos
 
 
-def reencode(src: Path, dst: Path, codec: str) -> bool:
+def reencode(src: Path, dst: Path, _codec: str) -> bool:
     dst.parent.mkdir(parents=True, exist_ok=True)
 
     cmd = [

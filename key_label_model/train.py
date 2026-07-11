@@ -2,21 +2,19 @@
 """Train inverse dynamics model: (frame_t, frame_{t+1}) → keys."""
 
 import argparse
-import json
-import sys
 from collections import defaultdict
+import json
 from pathlib import Path
+import sys
 
+import matplotlib
 import numpy as np
 import torch
+from torch.amp import GradScaler, autocast
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.data
-from torch.amp import GradScaler, autocast
-
 from tqdm import tqdm
-
-import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -144,7 +142,7 @@ class FramePairDataset(torch.utils.data.Dataset):
         self._labels = labels_list
         self._run_frame_counts = [len(f) for f in frames_list]
         self._run_pair_counts = [max(0, nf - 1) for nf in self._run_frame_counts]
-        self._cum_pairs = np.cumsum([0] + self._run_pair_counts)
+        self._cum_pairs = np.cumsum([0, *self._run_pair_counts])
         self._total_pairs = self._cum_pairs[-1]
 
     def __len__(self) -> int:
@@ -162,9 +160,10 @@ class FramePairDataset(torch.utils.data.Dataset):
 
 def load_data(
     processed_dir: Path, key_order: list[str]
-) -> tuple[list[np.ndarray], list[np.ndarray]]:
+) -> tuple[list[np.ndarray], list[np.ndarray], list[str]]:
     frames_list: list[np.ndarray] = []
     labels_list: list[np.ndarray] = []
+    run_names: list[str] = []
     runs = sorted(
         d for d in processed_dir.iterdir() if d.is_dir() and d.name.startswith("run_")
     )
@@ -189,9 +188,10 @@ def load_data(
         )
         frames_list.append(frames)
         labels_list.append(labels)
+        run_names.append(run_dir.name)
     if not frames_list:
         sys.exit("No valid data loaded.")
-    return frames_list, labels_list
+    return frames_list, labels_list, run_names
 
 
 def compute_pos_weight(labels_list: list[np.ndarray]) -> torch.Tensor:
@@ -207,13 +207,13 @@ def compute_pos_weight(labels_list: list[np.ndarray]) -> torch.Tensor:
 
 def split_dataset(
     dataset: FramePairDataset, val_frac: float, test_frac: float
-) -> tuple[FramePairDataset, FramePairDataset, FramePairDataset]:
+) -> tuple[
+    "SubsetFramePairDataset", "SubsetFramePairDataset", "SubsetFramePairDataset"
+]:
     n = len(dataset)
     indices = np.random.permutation(n)
     n_test = int(n * test_frac)
     n_val = int(n * val_frac)
-    n_train = n - n_val - n_test
-
     test_idx = indices[:n_test]
     val_idx = indices[n_test : n_test + n_val]
     train_idx = indices[n_test + n_val :]
@@ -290,9 +290,12 @@ def compute_metrics(
         "overall_acc": overall_acc,
         "macro_f1": macro_f1,
         "micro_f1": micro_f1.item(),
-        "per_key_acc": {k: float(v) for k, v in zip(key_names, per_key_acc)},
+        "per_key_acc": {
+            k: float(v) for k, v in zip(key_names, per_key_acc, strict=True)
+        },
         "per_key_f1": {
-            k: float(v) for k, v in zip(key_names, per_key_f1.cpu().numpy())
+            k: float(v)
+            for k, v in zip(key_names, per_key_f1.cpu().numpy(), strict=True)
         },
         "no_action_acc": no_action_acc,
         "no_action_count": int(n_no_action),
@@ -341,7 +344,7 @@ def compute_light_metrics(logits: torch.Tensor, targets: torch.Tensor) -> dict:
 
 
 def train_epoch(
-    model, loader, criterion, optimizer, scaler, device, key_names, epoch: int
+    model, loader, criterion, optimizer, scaler, device, _key_names, epoch: int
 ) -> dict:
     model.train()
     running_loss = 0.0
@@ -393,7 +396,7 @@ def eval_epoch(model, loader, criterion, device, key_names, epoch: int) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def plot_training_curves(history: dict, out_path: Path, key_names: list[str]):
+def plot_training_curves(history: dict, out_path: Path, _key_names: list[str]):
     epochs = range(1, len(history["train_loss"]) + 1)
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
 
@@ -483,6 +486,136 @@ def plot_per_key_metrics(best_metrics: dict, out_path: Path, key_names: list[str
     plt.close(fig)
 
 
+@torch.no_grad()
+def find_worst_predictions_per_key(
+    test_dataset: SubsetFramePairDataset,
+    model: nn.Module,
+    device: torch.device,
+    key_names: list[str],
+    top_k: int = 20,
+) -> dict[str, list[dict]]:
+    model.eval()
+    num_keys = len(key_names)
+    cum_pairs = test_dataset.base._cum_pairs
+
+    per_key_items: list[list[tuple]] = [[] for _ in range(num_keys)]
+
+    loader = torch.utils.data.DataLoader(
+        test_dataset,
+        batch_size=256,
+        shuffle=False,
+        num_workers=0,
+        collate_fn=collate_channels_last,
+    )
+
+    local_offset = 0
+    pbar = tqdm(loader, desc="Worst preds", unit="batch", leave=False)
+    for x_batch, y_batch in pbar:
+        x_batch = x_batch.to(device, non_blocking=True)
+        logits = model(x_batch)
+        probs = torch.sigmoid(logits)
+
+        y_np = y_batch.numpy()
+        p_np = probs.cpu().numpy()
+        eps = 1e-8
+        bce = -(y_np * np.log(p_np + eps) + (1 - y_np) * np.log(1 - p_np + eps))
+
+        batch_size = y_np.shape[0]
+        for i in range(batch_size):
+            global_idx = int(test_dataset.indices[local_offset + i])
+            run_idx = int(np.searchsorted(cum_pairs, global_idx, side="right") - 1)
+            frame_offset = global_idx - int(cum_pairs[run_idx])
+            for k in range(num_keys):
+                per_key_items[k].append(
+                    (
+                        float(bce[i, k]),
+                        run_idx,
+                        frame_offset,
+                        float(y_np[i, k]),
+                        float(p_np[i, k]),
+                    )
+                )
+        local_offset += batch_size
+
+    result: dict[str, list[dict]] = {}
+    for k, key_name in enumerate(key_names):
+        items = per_key_items[k]
+        items.sort(key=lambda t: t[0], reverse=True)
+        top = items[:top_k]
+        result[key_name] = [
+            {
+                "loss": float(loss),
+                "run_idx": int(run_idx),
+                "frame_offset": int(frame_offset),
+                "true": int(true_label),
+                "prob": float(prob),
+            }
+            for loss, run_idx, frame_offset, true_label, prob in top
+        ]
+
+    return result
+
+
+def plot_worst_predictions_for_key(
+    items: list[dict],
+    frames_list: list[np.ndarray],
+    run_names: list[str],
+    key_name: str,
+    out_path: Path,
+):
+    n_items = len(items)
+    if n_items == 0:
+        return
+
+    n_cols = 5
+    n_rows = min(4, int(np.ceil(n_items / n_cols)))
+
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(n_cols * 4.5, n_rows * 2.8))
+    if n_rows == 1:
+        axes = axes.reshape(1, -1)
+
+    for idx, item in enumerate(items):
+        row, col = divmod(idx, n_cols)
+        if row >= n_rows:
+            break
+        ax = axes[row, col]
+
+        run_idx = item["run_idx"]
+        frame_offset = item["frame_offset"]
+        true_label = item["true"]
+        prob = item["prob"]
+        loss = item["loss"]
+
+        f0 = frames_list[run_idx][frame_offset]
+        f1 = frames_list[run_idx][frame_offset + 1]
+        pair_img = np.concatenate([f0, f1], axis=1)
+
+        ax.imshow(pair_img, cmap="gray", aspect="auto")
+        ax.axis("off")
+
+        predicted = int(prob > 0.5)
+        wrong = predicted != true_label
+        title_color = "red" if wrong else "black"
+
+        ax.set_title(
+            f"#{idx + 1}  {run_names[run_idx]}:{frame_offset}\n"
+            f"true={true_label}  pred={prob:.3f}  loss={loss:.4f}",
+            fontsize=7,
+            color=title_color,
+        )
+
+    for idx in range(n_items, n_rows * n_cols):
+        row, col = divmod(idx, n_cols)
+        axes[row, col].axis("off")
+
+    fig.suptitle(
+        f"Worst predictions for key: {key_name}", fontsize=12, fontweight="bold"
+    )
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -527,7 +660,7 @@ def main():
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--min-lr", type=float, default=1e-6)
     parser.add_argument("--dropout", type=float, default=0.4)
-    parser.add_argument("--patience", type=int, default=15)
+    parser.add_argument("--patience", type=int, default=10)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--num-workers", type=int, default=8)
     args = parser.parse_args()
@@ -554,14 +687,14 @@ def main():
     device = get_device()
     print(f"Device: {device}")
 
-    frames_list, labels_list = load_data(args.processed_dir, key_names)
+    frames_list, labels_list, run_names = load_data(args.processed_dir, key_names)
     full_dataset = FramePairDataset(frames_list, labels_list)
     total_pairs = len(full_dataset)
     print(f"Total frame pairs: {total_pairs:,}")
 
     pos_weight = compute_pos_weight(labels_list)
     print(
-        f"Pos weights: {dict(zip(key_names, [f'{w:.1f}' for w in pos_weight.tolist()]))}"
+        f"Pos weights: {dict(zip(key_names, [f'{w:.1f}' for w in pos_weight.tolist()], strict=True))}"
     )
 
     train_ds, val_ds, test_ds = split_dataset(full_dataset, VAL_FRAC, TEST_FRAC)
@@ -608,7 +741,7 @@ def main():
     print(f"\nTraining for up to {args.epochs} epochs (patience={args.patience})...")
 
     model.train()
-    warmup_x, warmup_y = next(iter(train_loader))
+    warmup_x, _ = next(iter(train_loader))
     with autocast("cuda"):
         _ = model(warmup_x.to(device, non_blocking=True))
 
@@ -697,6 +830,25 @@ def main():
 
     plot_per_key_metrics(test_metrics, args.out_dir / "per_key_metrics.png", key_names)
     print(f"Per-key metrics saved to {args.out_dir / 'per_key_metrics.png'}")
+
+    print("\nGenerating worst-prediction visualizations per key...")
+    worst_preds_per_key = find_worst_predictions_per_key(
+        test_ds, model, device, key_names, top_k=20
+    )
+    for key_name in key_names:
+        items = worst_preds_per_key.get(key_name, [])
+        if not items:
+            print(f"  {key_name}: no test samples, skipping")
+            continue
+        out_path = args.out_dir / f"worst_preds_{key_name}.png"
+        plot_worst_predictions_for_key(
+            items, frames_list, run_names, key_name, out_path
+        )
+        print(f"  {key_name}: saved {len(items)} worst predictions to {out_path.name}")
+
+    with open(args.out_dir / "worst_predictions.json", "w") as f:
+        json.dump(worst_preds_per_key, f, indent=2)
+    print(f"Worst predictions JSON saved to {args.out_dir / 'worst_predictions.json'}")
 
     metrics_json = {
         "best_epoch": best_epoch,

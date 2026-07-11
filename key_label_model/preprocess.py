@@ -2,11 +2,11 @@
 """Preprocess labeled Isaac runs: decode video frames, clean keys, save .npy files."""
 
 import argparse
+from collections import Counter
 import json
+from pathlib import Path
 import subprocess
 import sys
-from collections import Counter
-from pathlib import Path
 
 import numpy as np
 
@@ -65,6 +65,8 @@ def decode_frames_ffmpeg(
         "pipe:1",
     ]
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    assert proc.stdout is not None
+    assert proc.stderr is not None
 
     chunks = []
     total_bytes = 0
@@ -147,7 +149,7 @@ def process_run(run_dir: Path, key_to_idx: dict[str, int], out_dir: Path) -> boo
     np.save(run_out / "frames.npy", frames)
     np.save(run_out / "labels.npy", labels)
 
-    kc = Counter()
+    kc: Counter[str] = Counter()
     for k in cleaned:
         kc.update(k)
     combo_counts = Counter(tuple(sorted(k)) for k in cleaned)

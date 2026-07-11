@@ -1,0 +1,28 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "lsp": {
+    "python": {
+      "command": ["/home/mert/Code/the-learning-of-isaac/.venv/bin/ruff", "server"],
+      "extensions": [".py"]
+    }
+  },
+  "formatter": {
+    "python": {
+      "command": ["/home/mert/Code/the-learning-of-isaac/.venv/bin/ruff", "format", "-"],
+      "extensions": [".py"]
+    }
+  },
+  "permission": {
+    "lsp": "allow"
+  },
+  "command": {
+    "lint": {
+      "description": "Run ruff check --fix on the project",
+      "template": "Run `ruff check --fix .` to auto-fix lint issues. Report any remaining violations."
+    },
+    "typecheck": {
+      "description": "Run mypy type checker on the project",
+      "template": "Run `mypy .` to type-check the project. Report any failures."
+    }
+  }
+}

@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Record Isaac gameplay via OBS Virtual Camera (V4L2), with pynput key logging."""
 
+from datetime import datetime
 import json
 import os
 import signal
 import subprocess
 import threading
 import time
-from datetime import datetime
 
 from pynput import keyboard
 
@@ -37,6 +37,7 @@ def validate_video(path: str) -> bool:
             capture_output=True,
             text=True,
             timeout=5,
+            check=False,
         )
         if result.returncode != 0:
             print(f"  ffprobe failed: {result.stderr.strip()[:200]}")
@@ -64,6 +65,7 @@ def validate_video(path: str) -> bool:
             ],
             capture_output=True,
             timeout=10,
+            check=False,
         )
         if result2.returncode != 0:
             print(f"  frame extraction failed: {result2.stderr.decode()[:200]}")
@@ -98,8 +100,9 @@ def find_v4l2_device() -> dict | None:
             capture_output=True,
             text=True,
             timeout=5,
+            check=False,
         )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+    except FileNotFoundError, subprocess.TimeoutExpired:
         print("  v4l2-ctl not found. Install v4l-utils.")
         return None
 
