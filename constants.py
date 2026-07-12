@@ -8,6 +8,26 @@ FPS = 20
 FRAME_SKIP = 3
 
 CODEC = "av1_nvenc"
+CQ = "32"
 
 DOWNLOAD_DIR = Path("downloads")
 COMPRESSED_DIR = Path("compressed")
+
+PROCESSED_DATA_DIR = Path("processed_data")
+TRAINING_RUNS_DIR = Path("training_runs")
+
+KEY_ORDER = [
+    "w",
+    "a",
+    "s",
+    "d",
+    "up",
+    "down",
+    "left",
+    "right",
+    "e",
+    "space",
+    "q",
+    "tab",
+    "ctrl",
+]

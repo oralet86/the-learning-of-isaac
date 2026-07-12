@@ -10,25 +10,9 @@ import sys
 
 import numpy as np
 
-from constants import TARGET_HEIGHT, TARGET_WIDTH
+from constants import KEY_ORDER, PROCESSED_DATA_DIR, TARGET_HEIGHT, TARGET_WIDTH
 
-KEY_ORDER = [
-    "w",
-    "a",
-    "s",
-    "d",
-    "up",
-    "down",
-    "left",
-    "right",
-    "e",
-    "space",
-    "q",
-    "tab",
-    "ctrl",
-]
 KEY_SET = set(KEY_ORDER)
-OUTPUT_DIR = Path("processed_data")
 
 
 def clean_keys(keys_list: list[list[str]]) -> list[list[str]]:
@@ -185,7 +169,7 @@ def main():
     parser.add_argument(
         "--out-dir",
         type=Path,
-        default=OUTPUT_DIR,
+        default=PROCESSED_DATA_DIR,
         help="Output directory for processed .npy files",
     )
     args = parser.parse_args()

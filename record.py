@@ -11,11 +11,10 @@ import time
 
 from pynput import keyboard
 
-from constants import CODEC, FPS, TARGET_HEIGHT, TARGET_WIDTH
+from constants import CODEC, CQ, FPS, TARGET_HEIGHT, TARGET_WIDTH
 
 INTERVAL = 1.0 / FPS
 
-CQ = "32"
 VIDEO_FILTERS = (
     f"fps={FPS},scale={TARGET_WIDTH}:{TARGET_HEIGHT},format=gray,setpts=N/FRAME_RATE/TB"
 )

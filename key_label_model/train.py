@@ -19,8 +19,8 @@ from tqdm import tqdm
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-PROCESSED_DIR = Path("processed_data")
-TRAINING_RUNS_DIR = Path("training_runs")
+from constants import PROCESSED_DATA_DIR, TRAINING_RUNS_DIR
+
 VAL_FRAC = 0.10
 TEST_FRAC = 0.10
 POS_WEIGHT_CLAMP = (0.1, 50.0)
@@ -648,7 +648,7 @@ def build_loader(
 
 def main():
     parser = argparse.ArgumentParser(description="Train inverse dynamics model")
-    parser.add_argument("--processed-dir", type=Path, default=PROCESSED_DIR)
+    parser.add_argument("--processed-dir", type=Path, default=PROCESSED_DATA_DIR)
     parser.add_argument(
         "--out-dir",
         type=Path,
