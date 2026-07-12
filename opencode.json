@@ -1,5 +1,4 @@
 {
-  "$schema": "https://opencode.ai/config.json",
   "lsp": {
     "python": {
       "command": ["/home/mert/Code/the-learning-of-isaac/.venv/bin/ruff", "server"],
