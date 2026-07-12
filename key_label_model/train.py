@@ -4,6 +4,7 @@
 import argparse
 from collections import defaultdict
 import json
+import math
 from pathlib import Path
 import sys
 
@@ -18,6 +19,8 @@ from tqdm import tqdm
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from constants import PROCESSED_DATA_DIR, TRAINING_RUNS_DIR
 
@@ -243,10 +246,19 @@ class SubsetFramePairDataset(torch.utils.data.Dataset):
 
 @torch.no_grad()
 def compute_metrics(
-    logits: torch.Tensor, targets: torch.Tensor, key_names: list[str]
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    key_names: list[str],
+    thresholds: dict[str, float] | None = None,
 ) -> dict:
     probs = torch.sigmoid(logits)
-    preds = (probs > 0.5).float()
+    if thresholds is None:
+        preds = (probs > 0.5).float()
+    else:
+        threshold_tensor = torch.tensor(
+            [thresholds[k] for k in key_names], device=probs.device, dtype=probs.dtype
+        )
+        preds = (probs > threshold_tensor.unsqueeze(0)).float()
 
     correct = (preds == targets).float()
     per_key_acc = correct.mean(dim=0).cpu().numpy()
@@ -343,6 +355,54 @@ def compute_light_metrics(logits: torch.Tensor, targets: torch.Tensor) -> dict:
 # ---------------------------------------------------------------------------
 
 
+@torch.no_grad()
+def find_optimal_thresholds(
+    model: nn.Module,
+    val_loader: torch.utils.data.DataLoader,
+    device: torch.device,
+    key_names: list[str],
+) -> tuple[dict[str, float], dict[str, float]]:
+    model.eval()
+    all_logits: list[torch.Tensor] = []
+    all_targets: list[torch.Tensor] = []
+    for x, y in val_loader:
+        x = x.to(device, non_blocking=True)
+        logits = model(x)
+        all_logits.append(logits.cpu())
+        all_targets.append(y)
+    logits_cat = torch.cat(all_logits)
+    targets_cat = torch.cat(all_targets)
+    probs = torch.sigmoid(logits_cat)
+
+    best_thresholds: dict[str, float] = {}
+    best_f1s: dict[str, float] = {}
+
+    thresholds_candidates = np.linspace(0.0, 1.0, 81)[1:-1]
+
+    for k, key_name in enumerate(key_names):
+        p = probs[:, k].numpy()
+        t = targets_cat[:, k].numpy()
+
+        best_t = 0.5
+        best_f1 = 0.0
+        for threshold in thresholds_candidates:
+            preds = (p >= threshold).astype(np.float32)
+            tp = float((preds * t).sum())
+            fp = float((preds * (1.0 - t)).sum())
+            fn = float(((1.0 - preds) * t).sum())
+            precision = tp / (tp + fp + 1e-8)
+            recall = tp / (tp + fn + 1e-8)
+            f1 = 2.0 * precision * recall / (precision + recall + 1e-8)
+            if f1 > best_f1:
+                best_f1 = f1
+                best_t = threshold
+
+        best_thresholds[key_name] = float(best_t)
+        best_f1s[key_name] = float(best_f1)
+
+    return best_thresholds, best_f1s
+
+
 def train_epoch(
     model, loader, criterion, optimizer, scaler, device, _key_names, epoch: int
 ) -> dict:
@@ -372,7 +432,15 @@ def train_epoch(
 
 
 @torch.no_grad()
-def eval_epoch(model, loader, criterion, device, key_names, epoch: int) -> dict:
+def eval_epoch(
+    model,
+    loader,
+    criterion,
+    device,
+    key_names,
+    epoch: int,
+    thresholds: dict[str, float] | None = None,
+) -> dict:
     model.eval()
     metrics_list = []
     running_loss = 0.0
@@ -382,7 +450,7 @@ def eval_epoch(model, loader, criterion, device, key_names, epoch: int) -> dict:
         logits = model(x)
         loss = criterion(logits, y)
         running_loss += loss.item()
-        m = compute_metrics(logits, y, key_names)
+        m = compute_metrics(logits, y, key_names, thresholds=thresholds)
         m["loss"] = loss.item()
         metrics_list.append(m)
         pbar.set_postfix(loss=f"{loss.item():.4f}")
@@ -655,14 +723,16 @@ def main():
         default=None,
         help="Output directory (default: training_runs/run_<timestamp>)",
     )
-    parser.add_argument("--batch-size", type=int, default=256)
+    parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--min-lr", type=float, default=1e-6)
     parser.add_argument("--dropout", type=float, default=0.4)
     parser.add_argument("--patience", type=int, default=10)
+    parser.add_argument("--warmup-epochs", type=int, default=5)
+    parser.add_argument("--cosine-t-max", type=int, default=None)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--num-workers", type=int, default=8)
+    parser.add_argument("--num-workers", type=int, default=4)
     args = parser.parse_args()
 
     if args.out_dir is None:
@@ -726,9 +796,26 @@ def main():
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=args.lr, weight_decay=5e-3, fused=True
     )
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=args.epochs // 2, eta_min=args.min_lr
+    cosine_t_max = (
+        args.cosine_t_max if args.cosine_t_max is not None else max(args.epochs // 3, 1)
     )
+    warmup_epochs = args.warmup_epochs
+    start_lr = args.min_lr / 10.0
+
+    def lr_lambda(epoch: int) -> float:
+        if epoch < warmup_epochs:
+            return start_lr / args.lr + (1.0 - start_lr / args.lr) * (
+                epoch / max(warmup_epochs, 1)
+            )
+        elif epoch < warmup_epochs + cosine_t_max:
+            progress = (epoch - warmup_epochs) / max(cosine_t_max, 1)
+            return args.min_lr / args.lr + (1.0 - args.min_lr / args.lr) * (
+                0.5 * (1.0 + math.cos(math.pi * progress))
+            )
+        else:
+            return args.min_lr / args.lr
+
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
     scaler = GradScaler("cuda")
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
@@ -817,7 +904,21 @@ def main():
         args.out_dir / "best_model.pt", map_location=device, weights_only=False
     )
     model.load_state_dict(ckpt["model_state_dict"])
-    test_metrics = eval_epoch(model, test_loader, criterion, device, key_names, 0)
+    print("\nTuning per-key thresholds on validation set...")
+    optimal_thresholds, threshold_f1s = find_optimal_thresholds(
+        model, val_loader, device, key_names
+    )
+    for k in key_names:
+        print(f"  {k}: thr={optimal_thresholds[k]:.2f}  val_f1={threshold_f1s[k]:.4f}")
+    test_metrics = eval_epoch(
+        model,
+        test_loader,
+        criterion,
+        device,
+        key_names,
+        0,
+        thresholds=optimal_thresholds,
+    )
     print(f"Test macro F1: {test_metrics['macro_f1']:.4f}")
     print(f"Test micro F1: {test_metrics['micro_f1']:.4f}")
     print(f"Test overall acc: {test_metrics['overall_acc']:.4f}")
@@ -853,6 +954,7 @@ def main():
     metrics_json = {
         "best_epoch": best_epoch,
         "best_val_macro_f1": best_val_f1,
+        "optimal_thresholds": optimal_thresholds,
         "test_metrics": {
             "macro_f1": test_metrics["macro_f1"],
             "micro_f1": test_metrics["micro_f1"],
@@ -869,6 +971,8 @@ def main():
             "min_lr": args.min_lr,
             "dropout": args.dropout,
             "patience": args.patience,
+            "warmup_epochs": warmup_epochs,
+            "cosine_t_max": cosine_t_max,
             "pos_weight_clamp": list(POS_WEIGHT_CLAMP),
             "model_params": n_params,
             "train_pairs": len(train_ds),

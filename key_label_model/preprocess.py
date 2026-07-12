@@ -10,6 +10,8 @@ import sys
 
 import numpy as np
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from constants import KEY_ORDER, PROCESSED_DATA_DIR, TARGET_HEIGHT, TARGET_WIDTH
 
 KEY_SET = set(KEY_ORDER)
@@ -128,6 +130,9 @@ def process_run(run_dir: Path, key_to_idx: dict[str, int], out_dir: Path) -> boo
         frames = frames[:n]
 
     run_out = out_dir / name
+    if (run_out / "frames.npy").exists() and (run_out / "labels.npy").exists():
+        print(f"  Already processed, skipping.")
+        return True
     run_out.mkdir(parents=True, exist_ok=True)
 
     np.save(run_out / "frames.npy", frames)
