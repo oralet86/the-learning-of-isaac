@@ -2,6 +2,23 @@
 name = "the-learning-of-isaac"
 version = "0.1.0"
 requires-python = "==3.14"
+dependencies = [
+    "evdev",
+    "matplotlib",
+    "numpy",
+    "pillow",
+    "pynput",
+    "scikit-multilearn",
+    "torch",
+    "tqdm",
+    "yt-dlp",
+]
+
+[project.optional-dependencies]
+dev = [
+    "mypy",
+    "ruff",
+]
 
 [tool.ruff]
 target-version = "py314"

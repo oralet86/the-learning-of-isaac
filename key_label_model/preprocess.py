@@ -9,6 +9,7 @@ import subprocess
 import sys
 
 import numpy as np
+from skmultilearn.model_selection import iterative_train_test_split
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -226,14 +227,23 @@ def prepare_training_dataset(
     pos_weight = total_neg / (total_pos + 1e-8)
     pos_weight = np.clip(pos_weight, POS_WEIGHT_CLAMP[0], POS_WEIGHT_CLAMP[1])
 
-    rng = np.random.RandomState(seed)
-    indices = rng.permutation(total_pairs)
-    n_test = int(total_pairs * test_frac)
-    n_val = int(total_pairs * val_frac)
+    np.random.seed(seed)
 
-    test_idx = indices[:n_test]
-    val_idx = indices[n_test : n_test + n_val]
-    train_idx = indices[n_test + n_val :]
+    X_idx = np.arange(total_pairs, dtype=np.int32).reshape(-1, 1)
+    y_int = y.astype(np.int32)
+
+    X_trainval, y_trainval, X_test, _ = iterative_train_test_split(
+        X_idx, y_int, test_size=test_frac
+    )
+
+    val_frac_in_remainder = val_frac / (1.0 - test_frac)
+    X_train, _, X_val, _ = iterative_train_test_split(
+        X_trainval, y_trainval, test_size=val_frac_in_remainder
+    )
+
+    train_idx = X_train.flatten().astype(np.int32)
+    val_idx = X_val.flatten().astype(np.int32)
+    test_idx = X_test.flatten().astype(np.int32)
 
     dataset_dir.mkdir(parents=True, exist_ok=True)
 
