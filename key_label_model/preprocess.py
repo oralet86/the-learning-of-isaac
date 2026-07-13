@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from constants import KEY_ORDER, PROCESSED_DATA_DIR, TARGET_HEIGHT, TARGET_WIDTH
 
 KEY_SET = set(KEY_ORDER)
+POS_WEIGHT_CLAMP = (0.1, 50.0)
 
 
 def clean_keys(keys_list: list[list[str]]) -> list[list[str]]:
@@ -131,7 +132,7 @@ def process_run(run_dir: Path, key_to_idx: dict[str, int], out_dir: Path) -> boo
 
     run_out = out_dir / name
     if (run_out / "frames.npy").exists() and (run_out / "labels.npy").exists():
-        print(f"  Already processed, skipping.")
+        print("  Already processed, skipping.")
         return True
     run_out.mkdir(parents=True, exist_ok=True)
 
@@ -161,6 +162,124 @@ def process_run(run_dir: Path, key_to_idx: dict[str, int], out_dir: Path) -> boo
     return True
 
 
+def prepare_training_dataset(
+    out_dir: Path, val_frac: float, test_frac: float, seed: int
+) -> bool:
+    dataset_dir = out_dir / "dataset"
+    if (dataset_dir / "dataset_info.json").exists():
+        print("\nDataset already prepared, skipping.")
+        return True
+
+    runs = sorted(
+        d for d in out_dir.iterdir() if d.is_dir() and d.name.startswith("run_")
+    )
+    if not runs:
+        print("\nNo processed runs found, skipping dataset preparation.")
+        return False
+
+    print(f"\nPreparing training dataset from {len(runs)} run(s)...")
+
+    frames_list: list[np.ndarray] = []
+    labels_list: list[np.ndarray] = []
+    run_names: list[str] = []
+    for run_dir in runs:
+        frames_path = run_dir / "frames.npy"
+        labels_path = run_dir / "labels.npy"
+        if not frames_path.exists() or not labels_path.exists():
+            continue
+        frames_list.append(np.load(frames_path))
+        labels_list.append(np.load(labels_path))
+        run_names.append(run_dir.name)
+
+    if not frames_list:
+        print("  No valid run data found.")
+        return False
+
+    n_keys = labels_list[0].shape[1]
+    h, w = frames_list[0].shape[1], frames_list[0].shape[2]
+
+    run_pair_counts = [max(0, len(f) - 1) for f in frames_list]
+    total_pairs = sum(run_pair_counts)
+    print(f"  Total frame pairs: {total_pairs:,}")
+
+    X = np.empty((total_pairs, 2, h, w), dtype=np.uint8)
+    y = np.empty((total_pairs, n_keys), dtype=np.uint8)
+    sample_map = np.empty((total_pairs, 2), dtype=np.int32)
+
+    idx = 0
+    for run_idx, (frames, labels) in enumerate(zip(frames_list, labels_list)):
+        n_pairs = run_pair_counts[run_idx]
+        if n_pairs == 0:
+            continue
+        X[idx : idx + n_pairs, 0] = frames[:n_pairs]
+        X[idx : idx + n_pairs, 1] = frames[1 : n_pairs + 1]
+        y[idx : idx + n_pairs] = labels[:n_pairs]
+        sample_map[idx : idx + n_pairs, 0] = run_idx
+        sample_map[idx : idx + n_pairs, 1] = np.arange(n_pairs, dtype=np.int32)
+        idx += n_pairs
+
+    total_pos = np.zeros(n_keys, dtype=np.float64)
+    total_neg = np.zeros(n_keys, dtype=np.float64)
+    for labels in labels_list:
+        total_pos += labels.sum(axis=0)
+        total_neg += (1 - labels).sum(axis=0)
+    pos_weight = total_neg / (total_pos + 1e-8)
+    pos_weight = np.clip(pos_weight, POS_WEIGHT_CLAMP[0], POS_WEIGHT_CLAMP[1])
+
+    rng = np.random.RandomState(seed)
+    indices = rng.permutation(total_pairs)
+    n_test = int(total_pairs * test_frac)
+    n_val = int(total_pairs * val_frac)
+
+    test_idx = indices[:n_test]
+    val_idx = indices[n_test : n_test + n_val]
+    train_idx = indices[n_test + n_val :]
+
+    dataset_dir.mkdir(parents=True, exist_ok=True)
+
+    np.save(dataset_dir / "train_X.npy", X[train_idx])
+    np.save(dataset_dir / "train_y.npy", y[train_idx])
+    np.save(dataset_dir / "val_X.npy", X[val_idx])
+    np.save(dataset_dir / "val_y.npy", y[val_idx])
+    np.save(dataset_dir / "test_X.npy", X[test_idx])
+    np.save(dataset_dir / "test_y.npy", y[test_idx])
+    np.save(dataset_dir / "test_sample_map.npy", sample_map[test_idx])
+
+    key_order_path = out_dir / "key_order.json"
+    with open(key_order_path) as f:
+        key_info = json.load(f)
+
+    dataset_info = {
+        "key_names": key_info["keys"],
+        "pos_weight": pos_weight.tolist(),
+        "run_names": run_names,
+        "train_count": len(train_idx),
+        "val_count": len(val_idx),
+        "test_count": len(test_idx),
+        "total_pairs": total_pairs,
+        "val_frac": val_frac,
+        "test_frac": test_frac,
+        "seed": seed,
+    }
+    with open(dataset_dir / "dataset_info.json", "w") as f:
+        json.dump(dataset_info, f, indent=2)
+
+    size_mb = (
+        X[train_idx].nbytes
+        + y[train_idx].nbytes
+        + X[val_idx].nbytes
+        + y[val_idx].nbytes
+        + X[test_idx].nbytes
+        + y[test_idx].nbytes
+    ) / 1e6
+    print(f"  Saved train/val/test splits ({size_mb:.1f} MB) to {dataset_dir}/")
+    print(
+        f"  Split: train={len(train_idx):,}  val={len(val_idx):,}  test={len(test_idx):,}"
+    )
+
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Preprocess labeled Isaac runs for training"
@@ -176,6 +295,24 @@ def main():
         type=Path,
         default=PROCESSED_DATA_DIR,
         help="Output directory for processed .npy files",
+    )
+    parser.add_argument(
+        "--val-frac",
+        type=float,
+        default=0.10,
+        help="Fraction of data for validation",
+    )
+    parser.add_argument(
+        "--test-frac",
+        type=float,
+        default=0.10,
+        help="Fraction of data for testing",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed for train/val/test split",
     )
     args = parser.parse_args()
 
@@ -205,12 +342,14 @@ def main():
         if process_run(run_dir, key_to_idx, args.out_dir):
             success += 1
             frames_path = args.out_dir / run_dir.name / "frames.npy"
-            total_frames += np.load(frames_path, mmap_mode="r").shape[0]
+            total_frames += np.load(frames_path).shape[0]
 
     print(
         f"\nDone. {success}/{len(runs)} runs processed, {total_frames:,} total frames."
     )
     print(f"Output: {args.out_dir.resolve()}/")
+
+    prepare_training_dataset(args.out_dir, args.val_frac, args.test_frac, args.seed)
 
 
 if __name__ == "__main__":
