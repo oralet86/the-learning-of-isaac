@@ -512,9 +512,9 @@ def find_worst_predictions_per_key(
             logits = model(x_batch)
             probs = torch.sigmoid(logits)
 
-        y_np = y_batch.numpy()
-        p_np = probs.cpu().numpy()
         eps = 1e-8
+        y_np = y_batch.numpy()
+        p_np = np.clip(probs.cpu().numpy(), eps, 1.0 - eps)
         bce = -(y_np * np.log(p_np + eps) + (1 - y_np) * np.log(1 - p_np + eps))
 
         batch_size = y_np.shape[0]
@@ -538,7 +538,7 @@ def find_worst_predictions_per_key(
         result[key_name] = [
             {
                 "loss": float(loss),
-                "frames": frames,
+                "frames": frames.tolist(),
                 "true": int(true_label),
                 "prob": float(prob),
             }
