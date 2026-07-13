@@ -3,6 +3,7 @@
 
 import argparse
 from collections import defaultdict
+from functools import partial
 import json
 import math
 from pathlib import Path
@@ -13,7 +14,7 @@ import numpy as np
 import torch
 from torch.amp import GradScaler, autocast
 import torch.nn as nn
-
+import torch.nn.functional as F
 import torch.utils.data
 from tqdm import tqdm
 
@@ -145,6 +146,31 @@ class PreprocessedDataset(torch.utils.data.Dataset):
         x = torch.from_numpy(self.X[idx])
         y = torch.from_numpy(self.y[idx])
         return x, y
+
+
+# ---------------------------------------------------------------------------
+# Focal Loss
+# ---------------------------------------------------------------------------
+
+
+def focal_loss_with_logits(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    alpha: torch.Tensor,
+    gamma: float,
+    reduction: str = "mean",
+) -> torch.Tensor:
+    p = torch.sigmoid(logits)
+    p_t = targets * p + (1.0 - targets) * (1.0 - p)
+    modulating = (1.0 - p_t).pow(gamma)
+    bce = F.binary_cross_entropy_with_logits(logits, targets, reduction="none")
+    alpha_t = targets * alpha + (1.0 - targets) * (1.0 - alpha)
+    loss = alpha_t * modulating * bce
+    if reduction == "mean":
+        return loss.mean()
+    if reduction == "sum":
+        return loss.sum()
+    return loss
 
 
 # ---------------------------------------------------------------------------
@@ -637,11 +663,12 @@ def main():
     parser.add_argument("--lr", type=float, default=3e-3)
     parser.add_argument("--min-lr", type=float, default=1e-6)
     parser.add_argument("--dropout", type=float, default=0.4)
-    parser.add_argument("--patience", type=int, default=10)
+    parser.add_argument("--patience", type=int, default=5)
     parser.add_argument("--warmup-epochs", type=int, default=5)
     parser.add_argument("--cosine-t-max", type=int, default=None)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--num-workers", type=int, default=0)
+    parser.add_argument("--gamma", type=float, default=2.0, help="Focal loss gamma")
     args = parser.parse_args()
 
     from datetime import datetime
@@ -667,6 +694,12 @@ def main():
     print(
         f"Pos weights: {dict(zip(key_names, [f'{w:.1f}' for w in pos_weight.tolist()], strict=True))}"
     )
+
+    alpha = pos_weight / (pos_weight + 1.0)
+    print(
+        f"Focal alpha: {dict(zip(key_names, [f'{a:.3f}' for a in alpha.tolist()], strict=True))}"
+    )
+    print(f"Focal gamma: {args.gamma}")
 
     train_ds = PreprocessedDataset(
         dataset_dir / "train_X.npy", dataset_dir / "train_y.npy"
@@ -702,7 +735,9 @@ def main():
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Model params: {n_params:,}")
 
-    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight.to(device))
+    criterion = partial(
+        focal_loss_with_logits, alpha=alpha.to(device), gamma=args.gamma
+    )
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=args.lr, weight_decay=5e-3, fused=True
     )
@@ -870,6 +905,8 @@ def main():
         },
         "history": {k: v[-1] for k, v in history.items() if k.startswith("val_")},
         "config": {
+            "loss": "focal",
+            "gamma": args.gamma,
             "batch_size": args.batch_size,
             "epochs": epoch,
             "lr": args.lr,
