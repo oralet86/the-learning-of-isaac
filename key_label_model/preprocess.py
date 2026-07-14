@@ -13,10 +13,22 @@ from skmultilearn.model_selection import iterative_train_test_split
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from constants import KEY_ORDER, PROCESSED_DATA_DIR, TARGET_HEIGHT, TARGET_WIDTH
+from constants import (
+    DEFAULT_DUPE_EPSILON,
+    DEFAULT_MAX_SAME_FRAMES,
+    DEFAULT_RUNS_DIR,
+    DEFAULT_SEED,
+    DEFAULT_TEST_FRAC,
+    DEFAULT_TRIM_EDGE_FRAC,
+    DEFAULT_VAL_FRAC,
+    KEY_ORDER,
+    POS_WEIGHT_CLAMP,
+    PROCESSED_DATA_DIR,
+    TARGET_HEIGHT,
+    TARGET_WIDTH,
+)
 
 KEY_SET = set(KEY_ORDER)
-POS_WEIGHT_CLAMP = (0.1, 50.0)
 
 
 def clean_keys(keys_list: list[list[str]]) -> list[list[str]]:
@@ -381,7 +393,7 @@ def main() -> None:
     parser.add_argument(
         "--runs-dir",
         type=Path,
-        default=Path("labeled_runs"),
+        default=DEFAULT_RUNS_DIR,
         help="Directory containing run_* subdirectories",
     )
     parser.add_argument(
@@ -393,37 +405,37 @@ def main() -> None:
     parser.add_argument(
         "--val-frac",
         type=float,
-        default=0.10,
+        default=DEFAULT_VAL_FRAC,
         help="Fraction of data for validation",
     )
     parser.add_argument(
         "--test-frac",
         type=float,
-        default=0.10,
+        default=DEFAULT_TEST_FRAC,
         help="Fraction of data for testing",
     )
     parser.add_argument(
         "--seed",
         type=int,
-        default=42,
+        default=DEFAULT_SEED,
         help="Random seed for train/val/test split",
     )
     parser.add_argument(
         "--max-same-frames",
         type=int,
-        default=60,
+        default=DEFAULT_MAX_SAME_FRAMES,
         help="Max consecutive identical frames before removing duplicates",
     )
     parser.add_argument(
         "--trim-edge-frac",
         type=float,
-        default=0.01,
+        default=DEFAULT_TRIM_EDGE_FRAC,
         help="Fraction of frames to trim from start and end of each run",
     )
     parser.add_argument(
         "--dupe-epsilon",
         type=float,
-        default=1.0,
+        default=DEFAULT_DUPE_EPSILON,
         help="Mean absolute pixel difference threshold for identical-frame detection",
     )
     args = parser.parse_args()
