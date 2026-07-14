@@ -91,7 +91,7 @@ def validate_video(path: str) -> bool:
         return False
 
 
-def find_v4l2_device() -> dict | None:
+def find_v4l2_device() -> dict[str, str] | None:
     """Find OBS Virtual Camera V4L2 device."""
     try:
         result = subprocess.run(
@@ -126,14 +126,14 @@ def find_v4l2_device() -> dict | None:
     return None
 
 
-def key_to_name(k):
+def key_to_name(k: keyboard.Key | keyboard.KeyCode | None) -> str:
     try:
-        return k.char
+        return k.char  # type: ignore[union-attr]
     except AttributeError:
         return str(k).replace("Key.", "")
 
 
-def main():
+def main() -> None:
     print("Looking for OBS Virtual Camera...")
     v4l2 = find_v4l2_device()
 
@@ -181,11 +181,11 @@ def main():
     key_state = set()
     lock = threading.Lock()
 
-    def on_press(k):
+    def on_press(k: keyboard.Key | keyboard.KeyCode | None) -> None:
         with lock:
             key_state.add(key_to_name(k))
 
-    def on_release(k):
+    def on_release(k: keyboard.Key | keyboard.KeyCode | None) -> None:
         with lock:
             key_state.discard(key_to_name(k))
 

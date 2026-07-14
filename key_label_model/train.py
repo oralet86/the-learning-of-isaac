@@ -8,6 +8,7 @@ import json
 import math
 from pathlib import Path
 import sys
+from typing import Any
 
 import matplotlib
 import numpy as np
@@ -26,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from constants import PROCESSED_DATA_DIR, TRAINING_RUNS_DIR
 
 
-def set_seed(seed: int = 42):
+def set_seed(seed: int = 42) -> None:
     torch.manual_seed(seed)
     np.random.seed(seed)
     if torch.cuda.is_available():
@@ -59,7 +60,7 @@ class ResidualBlock(nn.Module):
         self.conv2 = nn.Conv2d(out_channels, out_channels, 3, 1, 1, bias=False)
         self.bn2 = nn.BatchNorm2d(out_channels)
         if stride != 1 or in_channels != out_channels:
-            self.downsample = nn.Sequential(
+            self.downsample: nn.Module = nn.Sequential(
                 nn.Conv2d(in_channels, out_channels, 1, stride, bias=False),
                 nn.BatchNorm2d(out_channels),
             )
@@ -101,7 +102,7 @@ class InverseDynamicsResNet(nn.Module):
 
         self._init_weights()
 
-    def _init_weights(self):
+    def _init_weights(self) -> None:
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
@@ -134,7 +135,7 @@ class InverseDynamicsResNet(nn.Module):
 # ---------------------------------------------------------------------------
 
 
-class PreprocessedDataset(torch.utils.data.Dataset):
+class PreprocessedDataset(torch.utils.data.Dataset[tuple[torch.Tensor, torch.Tensor]]):
     def __init__(self, x_path: str | Path, y_path: str | Path):
         self.X = np.load(x_path)
         self.y = np.load(y_path)
@@ -184,7 +185,7 @@ def compute_metrics(
     targets: torch.Tensor,
     key_names: list[str],
     thresholds: dict[str, float] | None = None,
-) -> dict:
+) -> dict[str, Any]:
     probs = torch.sigmoid(logits)
     if thresholds is None:
         preds = (probs > 0.5).float()
@@ -249,7 +250,7 @@ def compute_metrics(
     }
 
 
-def aggregate_metrics(metrics_list: list[dict]) -> dict:
+def aggregate_metrics(metrics_list: list[dict[str, Any]]) -> dict[str, Any]:
     result = {}
     if metrics_list and "per_key_acc" in metrics_list[0]:
         keys = list(metrics_list[0]["per_key_acc"].keys())
@@ -269,7 +270,9 @@ def aggregate_metrics(metrics_list: list[dict]) -> dict:
     return result
 
 
-def compute_light_metrics(logits: torch.Tensor, targets: torch.Tensor) -> dict:
+def compute_light_metrics(
+    logits: torch.Tensor, targets: torch.Tensor
+) -> dict[str, Any]:
     probs = torch.sigmoid(logits)
     preds = (probs > 0.5).float()
     correct = (preds == targets).float()
@@ -292,7 +295,7 @@ def compute_light_metrics(logits: torch.Tensor, targets: torch.Tensor) -> dict:
 @torch.no_grad()
 def find_optimal_thresholds(
     model: nn.Module,
-    val_loader: torch.utils.data.DataLoader,
+    val_loader: torch.utils.data.DataLoader[tuple[torch.Tensor, torch.Tensor]],
     device: torch.device,
     key_names: list[str],
 ) -> tuple[dict[str, float], dict[str, float]]:
@@ -345,8 +348,15 @@ def find_optimal_thresholds(
 
 
 def train_epoch(
-    model, loader, criterion, optimizer, scaler, device, _key_names, epoch: int
-) -> dict:
+    model: nn.Module,
+    loader: torch.utils.data.DataLoader[tuple[torch.Tensor, torch.Tensor]],
+    criterion: Any,
+    optimizer: torch.optim.Optimizer,
+    scaler: GradScaler,
+    device: torch.device,
+    _key_names: list[str],
+    epoch: int,
+) -> dict[str, Any]:
     model.train()
     running_loss = 0.0
     running_acc = 0.0
@@ -380,14 +390,14 @@ def train_epoch(
 
 @torch.no_grad()
 def eval_epoch(
-    model,
-    loader,
-    criterion,
-    device,
-    key_names,
+    model: nn.Module,
+    loader: torch.utils.data.DataLoader[tuple[torch.Tensor, torch.Tensor]],
+    criterion: Any,
+    device: torch.device,
+    key_names: list[str],
     epoch: int,
     thresholds: dict[str, float] | None = None,
-) -> dict:
+) -> dict[str, Any]:
     model.eval()
     metrics_list = []
     running_loss = 0.0
@@ -419,7 +429,9 @@ def eval_epoch(
 # ---------------------------------------------------------------------------
 
 
-def plot_training_curves(history: dict, out_path: Path, _key_names: list[str]):
+def plot_training_curves(
+    history: dict[str, list[float]], out_path: Path, _key_names: list[str]
+) -> None:
     epochs = range(1, len(history["train_loss"]) + 1)
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
 
@@ -478,7 +490,9 @@ def plot_training_curves(history: dict, out_path: Path, _key_names: list[str]):
     plt.close(fig)
 
 
-def plot_per_key_metrics(best_metrics: dict, out_path: Path, key_names: list[str]):
+def plot_per_key_metrics(
+    best_metrics: dict[str, float], out_path: Path, key_names: list[str]
+) -> None:
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
 
     keys = key_names
@@ -511,16 +525,18 @@ def plot_per_key_metrics(best_metrics: dict, out_path: Path, key_names: list[str
 
 @torch.no_grad()
 def find_worst_predictions_per_key(
-    test_dataset: torch.utils.data.Dataset,
+    test_dataset: torch.utils.data.Dataset[tuple[torch.Tensor, torch.Tensor]],
     model: nn.Module,
     device: torch.device,
     key_names: list[str],
     top_k: int = 20,
-) -> dict[str, list[dict]]:
+) -> dict[str, list[dict[str, object]]]:
     model.eval()
     num_keys = len(key_names)
 
-    per_key_items: list[list[tuple]] = [[] for _ in range(num_keys)]
+    per_key_items: list[list[tuple[float, np.ndarray, float, float]]] = [
+        [] for _ in range(num_keys)
+    ]
 
     loader = torch.utils.data.DataLoader(
         test_dataset,
@@ -560,7 +576,7 @@ def find_worst_predictions_per_key(
                     )
                 )
 
-    result: dict[str, list[dict]] = {}
+    result: dict[str, list[dict[str, object]]] = {}
     for k, key_name in enumerate(key_names):
         items = per_key_items[k]
         items.sort(key=lambda t: t[0], reverse=True)
@@ -579,10 +595,10 @@ def find_worst_predictions_per_key(
 
 
 def plot_worst_predictions_for_key(
-    items: list[dict],
+    items: list[dict[str, Any]],
     key_name: str,
     out_path: Path,
-):
+) -> None:
     n_items = len(items)
     if n_items == 0:
         return
@@ -638,12 +654,12 @@ def plot_worst_predictions_for_key(
 
 
 def build_loader(
-    dataset: torch.utils.data.Dataset,
+    dataset: torch.utils.data.Dataset[tuple[torch.Tensor, torch.Tensor]],
     batch_size: int,
     shuffle: bool,
     num_workers: int = 8,
     pin_memory: bool = True,
-) -> torch.utils.data.DataLoader:
+) -> torch.utils.data.DataLoader[tuple[torch.Tensor, torch.Tensor]]:
     return torch.utils.data.DataLoader(
         dataset,
         batch_size=batch_size,
@@ -656,15 +672,20 @@ def build_loader(
     )
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="Train inverse dynamics model")
     parser.add_argument("--batch-size", type=int, default=512)
     parser.add_argument("--epochs", type=int, default=100)
-    parser.add_argument("--lr", type=float, default=3e-3)
-    parser.add_argument("--min-lr", type=float, default=1e-6)
+    parser.add_argument("--lr", type=float, default=4e-3)
+    parser.add_argument("--min-lr", type=float, default=5e-6)
     parser.add_argument("--dropout", type=float, default=0.4)
     parser.add_argument("--patience", type=int, default=5)
-    parser.add_argument("--warmup-epochs", type=int, default=5)
+    parser.add_argument(
+        "--plateau-epochs",
+        type=int,
+        default=10,
+        help="Epochs to hold at max LR before cosine decay",
+    )
     parser.add_argument("--cosine-t-max", type=int, default=None)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--num-workers", type=int, default=0)
@@ -726,9 +747,9 @@ def main():
     model = InverseDynamicsResNet(
         in_channels=2, num_keys=num_keys, dropout=args.dropout
     )
-    model = model.to(device, memory_format=torch.channels_last)
+    model = model.to(device, memory_format=torch.channels_last)  # type: ignore[call-overload]
     try:
-        model = torch.compile(model)
+        model = torch.compile(model)  # type: ignore[assignment]
         print("  torch.compile: enabled")
     except Exception as e:
         print(f"  torch.compile: failed ({e}), running uncompiled")
@@ -744,21 +765,18 @@ def main():
     cosine_t_max = (
         args.cosine_t_max if args.cosine_t_max is not None else max(args.epochs // 3, 1)
     )
-    warmup_epochs = args.warmup_epochs
-    start_lr = args.min_lr / 10.0
+    plateau_epochs = args.plateau_epochs
+    min_lr_ratio = args.min_lr / args.lr
 
     def lr_lambda(epoch: int) -> float:
-        if epoch < warmup_epochs:
-            return start_lr / args.lr + (1.0 - start_lr / args.lr) * (
-                epoch / max(warmup_epochs, 1)
-            )
-        elif epoch < warmup_epochs + cosine_t_max:
-            progress = (epoch - warmup_epochs) / max(cosine_t_max, 1)
-            return args.min_lr / args.lr + (1.0 - args.min_lr / args.lr) * (
+        if epoch < plateau_epochs:
+            return 1.0
+        if epoch < plateau_epochs + cosine_t_max:
+            progress = (epoch - plateau_epochs) / max(cosine_t_max, 1)
+            return min_lr_ratio + (1.0 - min_lr_ratio) * (
                 0.5 * (1.0 + math.cos(math.pi * progress))
             )
-        else:
-            return args.min_lr / args.lr
+        return min_lr_ratio
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
     scaler = GradScaler("cuda")
@@ -913,7 +931,7 @@ def main():
             "min_lr": args.min_lr,
             "dropout": args.dropout,
             "patience": args.patience,
-            "warmup_epochs": warmup_epochs,
+            "plateau_epochs": plateau_epochs,
             "cosine_t_max": cosine_t_max,
             "model_params": n_params,
             "train_pairs": len(train_ds),

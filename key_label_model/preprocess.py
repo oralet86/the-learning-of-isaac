@@ -90,7 +90,59 @@ def decode_frames_ffmpeg(
     return frames
 
 
-def process_run(run_dir: Path, key_to_idx: dict[str, int], out_dir: Path) -> bool:
+def trim_edges(
+    frames: np.ndarray, labels: np.ndarray, frac: float = 0.01
+) -> tuple[np.ndarray, np.ndarray]:
+    """Trim ``frac`` of frames from the start and end of a run."""
+    n = len(frames)
+    trim_n = int(n * frac)
+    if trim_n == 0:
+        return frames, labels
+    return frames[trim_n:-trim_n], labels[trim_n:-trim_n]
+
+
+def remove_long_identical_runs(
+    frames: np.ndarray, labels: np.ndarray, max_same: int = 10, epsilon: float = 1.0
+) -> tuple[np.ndarray, np.ndarray]:
+    """Remove excess frames from runs of near-identical consecutive frames.
+
+    For any run of frames where each consecutive pair has mean absolute difference
+    <= ``epsilon`` (out of 255) longer than ``max_same``, keep only the first frame
+    and drop the rest.
+    """
+    n: int = len(frames)
+    if n <= 1 or max_same <= 0:
+        return frames, labels
+
+    keep_mask = np.ones(n, dtype=bool)
+    run_start = 0
+    for i in range(1, n):
+        diff = float(
+            np.mean(
+                np.abs(frames[i].astype(np.float32) - frames[i - 1].astype(np.float32))
+            )
+        )
+        if diff > epsilon:
+            run_len = i - run_start
+            if run_len > max_same:
+                keep_mask[run_start + 1 : i] = False
+            run_start = i
+
+    run_len = n - run_start
+    if run_len > max_same:
+        keep_mask[run_start + 1 :] = False
+
+    return frames[keep_mask], labels[keep_mask]
+
+
+def process_run(
+    run_dir: Path,
+    key_to_idx: dict[str, int],
+    out_dir: Path,
+    max_same_frames: int = 10,
+    trim_edge_frac: float = 0.01,
+    dupe_epsilon: float = 1.0,
+) -> bool:
     name = run_dir.name
     print(f"\nProcessing {name} ...")
 
@@ -131,6 +183,34 @@ def process_run(run_dir: Path, key_to_idx: dict[str, int], out_dir: Path) -> boo
         labels = labels[:n]
         frames = frames[:n]
 
+    n_edges_removed = 0
+    n_dupes_removed = 0
+
+    if trim_edge_frac > 0:
+        frames, labels = trim_edges(frames, labels, trim_edge_frac)
+        n_edges_removed = n - len(frames)
+        n = len(frames)
+        if n_edges_removed > 0:
+            print(
+                f"  Trimmed {n_edges_removed} edge frames "
+                f"({trim_edge_frac:.1%} from each side)"
+            )
+
+    if max_same_frames > 0:
+        n_before = n
+        frames, labels = remove_long_identical_runs(
+            frames, labels, max_same_frames, dupe_epsilon
+        )
+        n_dupes_removed = n_before - len(frames)
+        n = len(frames)
+        if n_dupes_removed > 0:
+            pct = n_dupes_removed / n_before * 100
+            print(
+                f"  Removed {n_dupes_removed} duplicate frames ({pct:.1f}%) "
+                f"from runs >{max_same_frames} near-identical frames "
+                f"(epsilon={dupe_epsilon})"
+            )
+
     run_out = out_dir / name
     if (run_out / "frames.npy").exists() and (run_out / "labels.npy").exists():
         print("  Already processed, skipping.")
@@ -149,6 +229,8 @@ def process_run(run_dir: Path, key_to_idx: dict[str, int], out_dir: Path) -> boo
         "source_dir": str(run_dir),
         "n_frames": n,
         "n_original_frames": len(raw_keys),
+        "n_removed_edges": n_edges_removed,
+        "n_removed_duplicates": n_dupes_removed,
         "kept_keys": KEY_ORDER,
         "key_frequencies": {k: int(v) for k, v in kc.most_common()},
         "empty_frames": int(sum(1 for k in cleaned if len(k) == 0)),
@@ -208,7 +290,9 @@ def prepare_training_dataset(
     sample_map = np.empty((total_pairs, 2), dtype=np.int32)
 
     idx = 0
-    for run_idx, (frames, labels) in enumerate(zip(frames_list, labels_list)):
+    for run_idx, (frames, labels) in enumerate(
+        zip(frames_list, labels_list, strict=True)
+    ):
         n_pairs = run_pair_counts[run_idx]
         if n_pairs == 0:
             continue
@@ -290,7 +374,7 @@ def prepare_training_dataset(
     return True
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(
         description="Preprocess labeled Isaac runs for training"
     )
@@ -324,6 +408,24 @@ def main():
         default=42,
         help="Random seed for train/val/test split",
     )
+    parser.add_argument(
+        "--max-same-frames",
+        type=int,
+        default=60,
+        help="Max consecutive identical frames before removing duplicates",
+    )
+    parser.add_argument(
+        "--trim-edge-frac",
+        type=float,
+        default=0.01,
+        help="Fraction of frames to trim from start and end of each run",
+    )
+    parser.add_argument(
+        "--dupe-epsilon",
+        type=float,
+        default=1.0,
+        help="Mean absolute pixel difference threshold for identical-frame detection",
+    )
     args = parser.parse_args()
 
     runs_dir = args.runs_dir
@@ -349,7 +451,14 @@ def main():
     success = 0
     total_frames = 0
     for run_dir in runs:
-        if process_run(run_dir, key_to_idx, args.out_dir):
+        if process_run(
+            run_dir,
+            key_to_idx,
+            args.out_dir,
+            args.max_same_frames,
+            args.trim_edge_frac,
+            args.dupe_epsilon,
+        ):
             success += 1
             frames_path = args.out_dir / run_dir.name / "frames.npy"
             total_frames += np.load(frames_path).shape[0]

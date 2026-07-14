@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tkinter as tk
+from typing import Any
 
 import numpy as np
 from PIL import Image, ImageTk
@@ -68,7 +69,7 @@ class Viewer:
         print(f"Loading frames from {self.video_path} ...")
         self.frames = load_frames(str(self.video_path), self.src_width, self.src_height)
         if self.frames is None:
-            sys.exit("Failed to load video frames.")
+            raise SystemExit("Failed to load video frames.")
 
         with open(self.keys_path) as f:
             self.keys_raw: list[list[str]] = json.load(f)
@@ -81,7 +82,7 @@ class Viewer:
         self.playing = False
         self.direction = 1  # 1=forward, -1=backward
         self.fps = FPS
-        self.play_timer = None
+        self.play_timer: str | None = None
 
         self.root = tk.Tk()
         self.root.title(f"view_recording - {self.run_dir.name}")
@@ -95,11 +96,11 @@ class Viewer:
 
         self._show_frame()
 
-    def _build_controls(self):
+    def _build_controls(self) -> None:
         ctrl = tk.Frame(self.root, bg=BG_COLOR, pady=4)
         ctrl.pack(side=tk.TOP, fill=tk.X)
 
-        btn_opts = {
+        btn_opts: dict[str, Any] = {
             "bg": "#2d2d5e",
             "fg": "white",
             "relief": tk.FLAT,
@@ -146,7 +147,7 @@ class Viewer:
         tk.Button(ctrl, text="−", command=self.fps_down, **btn_opts).pack(side=tk.LEFT)
         tk.Button(ctrl, text="+", command=self.fps_up, **btn_opts).pack(side=tk.LEFT)
 
-    def _build_display(self):
+    def _build_display(self) -> None:
         self.canvas = tk.Canvas(
             self.root,
             width=self.display_w,
@@ -156,7 +157,7 @@ class Viewer:
         )
         self.canvas.pack(side=tk.TOP, padx=8, pady=4)
 
-    def _build_info(self):
+    def _build_info(self) -> None:
         info = tk.Frame(self.root, bg=BG_COLOR, pady=2)
         info.pack(side=tk.TOP, fill=tk.X, padx=8)
 
@@ -188,7 +189,7 @@ class Viewer:
         )
         self.info_label.pack(side=tk.LEFT, padx=16)
 
-    def _bind_keys(self):
+    def _bind_keys(self) -> None:
         self.root.bind("<space>", lambda e: self.toggle_play())
         self.root.bind("<Left>", lambda e: self.step_back())
         self.root.bind("<Right>", lambda e: self.step_forward())
@@ -199,16 +200,16 @@ class Viewer:
         self.root.bind("<Escape>", lambda e: self.root.quit())
         self.root.bind("q", lambda e: self.root.quit())
 
-    def _show_frame(self):
+    def _show_frame(self) -> None:
         if self.current_frame < 0:
             self.current_frame = 0
         if self.current_frame >= self.num_frames:
             self.current_frame = self.num_frames - 1
 
-        frame = self.frames[self.current_frame]
+        frame = self.frames[self.current_frame]  # type: ignore[index]
 
         img = Image.fromarray(frame, mode="L")
-        img = img.resize((self.display_w, self.display_h), Image.NEAREST)
+        img = img.resize((self.display_w, self.display_h), Image.NEAREST)  # type: ignore[attr-defined]
         self._photo = ImageTk.PhotoImage(img)
 
         self.canvas.delete("all")
@@ -226,8 +227,8 @@ class Viewer:
         info_parts = []
         if duration > 0:
             info_parts.append(f"{duration:.0f}s")
-        if self.frames.shape[0] > 0 and fps > 0:
-            info_parts.append(f"{self.frames.shape[0] / fps:.0f}s video")
+        if self.frames.shape[0] > 0 and fps > 0:  # type: ignore[union-attr]
+            info_parts.append(f"{self.frames.shape[0] / fps:.0f}s video")  # type: ignore[union-attr]
         self.info_label.config(text="  ".join(info_parts))
 
     def _current_keys(self) -> list[str]:
@@ -236,29 +237,29 @@ class Viewer:
             return self.keys_raw[idx]
         return []
 
-    def _set_frame(self, n: int):
+    def _set_frame(self, n: int) -> None:
         old = self.current_frame
         self.current_frame = max(0, min(n, self.num_frames - 1))
         if self.current_frame != old:
             self._show_frame()
 
-    def step_forward(self):
+    def step_forward(self) -> None:
         self._set_frame(self.current_frame + 1)
 
-    def step_back(self):
+    def step_back(self) -> None:
         self._set_frame(self.current_frame - 1)
 
-    def goto_first(self):
+    def goto_first(self) -> None:
         self._set_frame(0)
 
-    def goto_last(self):
+    def goto_last(self) -> None:
         self._set_frame(self.num_frames - 1)
 
-    def reverse(self):
+    def reverse(self) -> None:
         self.direction = -self.direction
         self._update_button_text()
 
-    def _update_button_text(self):
+    def _update_button_text(self) -> None:
         if self.playing:
             if self.direction == 1:
                 label = "▶⏸"
@@ -271,25 +272,25 @@ class Viewer:
                 label = "◀"
         self.play_btn.config(text=label)
 
-    def toggle_play(self):
+    def toggle_play(self) -> None:
         if self.playing:
             self._stop_playing()
         else:
             self._start_playing()
 
-    def _start_playing(self):
+    def _start_playing(self) -> None:
         self.playing = True
         self._update_button_text()
         self._tick()
 
-    def _stop_playing(self):
+    def _stop_playing(self) -> None:
         self.playing = False
         if self.play_timer:
             self.root.after_cancel(self.play_timer)
-            self.play_timer = None
+        self.play_timer = None
         self._update_button_text()
 
-    def _tick(self):
+    def _tick(self) -> None:
         if not self.playing:
             return
         new_frame = self.current_frame + self.direction
@@ -304,7 +305,7 @@ class Viewer:
         interval = int(1000 / max(1, self.fps))
         self.play_timer = self.root.after(interval, self._tick)
 
-    def _set_fps(self, _event=None):
+    def _set_fps(self, _event: tk.Event | None = None) -> None:
         try:
             val = int(self.fps_var.get())
             if 1 <= val <= 120:
@@ -317,25 +318,25 @@ class Viewer:
         except ValueError:
             self.fps_var.set(str(self.fps))
 
-    def fps_up(self):
+    def fps_up(self) -> None:
         self.fps = min(120, self.fps + 5)
         self.fps_var.set(str(self.fps))
         if self.playing:
             self._stop_playing()
             self._start_playing()
 
-    def fps_down(self):
+    def fps_down(self) -> None:
         self.fps = max(1, self.fps - 5)
         self.fps_var.set(str(self.fps))
         if self.playing:
             self._stop_playing()
             self._start_playing()
 
-    def run(self):
+    def run(self) -> None:
         self.root.mainloop()
 
 
-def main():
+def main() -> None:
     if len(sys.argv) < 2:
         sys.exit(f"Usage: {sys.argv[0]} labeled_runs/run_timestamp/")
 

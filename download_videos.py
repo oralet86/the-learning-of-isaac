@@ -3,6 +3,7 @@ import random
 import re
 import sys
 import time
+from typing import Any
 
 from tqdm import tqdm
 import yt_dlp
@@ -48,7 +49,7 @@ def log_error(msg: str) -> None:
         f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')}  {msg}\n")
 
 
-def make_download_opts(folder_slug: str) -> dict:
+def make_download_opts(folder_slug: str) -> dict[str, Any]:
     return {
         "format": "bestvideo[height<=360][fps<=20]/bestvideo[height<=360]/best[height<=360]",
         "format_sort": ["codec:av1:av01", "codec:vp9.2", "vcodec:vp9", "vcodec:h264"],
@@ -66,7 +67,7 @@ def make_download_opts(folder_slug: str) -> dict:
     }
 
 
-def extract_playlist(url: str) -> tuple[str, list[dict]]:
+def extract_playlist(url: str) -> tuple[str, list[dict[str, Any]]]:
     opts = {
         "extract_flat": "in_playlist",
         "quiet": True,
