@@ -591,11 +591,6 @@ def main() -> None:
         f"Pos weights: {dict(zip(key_names, [f'{w:.1f}' for w in pos_weight.tolist()], strict=True))}"
     )
 
-    alpha = pos_weight / (pos_weight + 1.0)
-    print(
-        f"Focal alpha: {dict(zip(key_names, [f'{a:.3f}' for a in alpha.tolist()], strict=True))}"
-    )
-
     train_ds = ChunkedDataset(PROCESSED_DATA_DIR / "train")
     val_ds = ChunkedDataset(PROCESSED_DATA_DIR / "val")
     test_ds = ChunkedDataset(PROCESSED_DATA_DIR / "test")
@@ -630,7 +625,7 @@ def main() -> None:
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Model params: {n_params:,}")
 
-    criterion = partial(focal_loss_with_logits, alpha=alpha.to(device))
+    criterion = partial(focal_loss_with_logits, pos_weight=pos_weight.to(device))
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=lr,

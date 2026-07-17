@@ -10,10 +10,12 @@ POS_WEIGHT_CLAMP = (0.1, 50.0)
 def focal_loss_with_logits(
     logits: torch.Tensor,
     targets: torch.Tensor,
-    alpha: torch.Tensor,
+    pos_weight: torch.Tensor,
     gamma: float = DEFAULT_FOCAL_GAMMA,
     reduction: str = "mean",
 ) -> torch.Tensor:
+    pos_weight = torch.clamp(pos_weight, POS_WEIGHT_CLAMP[0], POS_WEIGHT_CLAMP[1])
+    alpha = pos_weight / (pos_weight + 1.0)
     p = torch.sigmoid(logits)
     p_t = targets * p + (1.0 - targets) * (1.0 - p)
     modulating = (1.0 - p_t).pow(gamma)

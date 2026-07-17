@@ -16,7 +16,6 @@ from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from components.focal_loss import POS_WEIGHT_CLAMP
 from constants import (
     DEFAULT_CHUNK_SIZE,
     DEFAULT_DUPE_EPSILON,
@@ -348,7 +347,6 @@ def split_chunks(
     total_pos = y_all.sum(axis=0).astype(np.float64)
     total_neg = (total_windows - total_pos).astype(np.float64)
     pos_weight = total_neg / (total_pos + 1e-8)
-    pos_weight = np.clip(pos_weight, POS_WEIGHT_CLAMP[0], POS_WEIGHT_CLAMP[1])
 
     np.random.seed(seed)
 
