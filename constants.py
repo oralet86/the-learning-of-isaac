@@ -1,20 +1,24 @@
 from pathlib import Path
 
+DEFAULT_SEED = 42
+
+# Codec options
 TARGET_WIDTH = 284
 TARGET_HEIGHT = 160
-TARGET_SIZE = (TARGET_WIDTH, TARGET_HEIGHT)
-
+TARGET_SIZE: tuple[int, int] = (TARGET_WIDTH, TARGET_HEIGHT)
 FPS = 20
 FRAME_SKIP = 3
-
 CODEC = "av1_nvenc"
 CQ = "32"
 
-DOWNLOAD_DIR = Path("downloads")
-COMPRESSED_DIR = Path("compressed")
+# Directories
+DATA_DIR = Path("data")
 
-PROCESSED_DATA_DIR = Path("processed_data")
-TRAINING_RUNS_DIR = Path("training_runs")
+DOWNLOAD_DIR: Path = DATA_DIR / Path("downloaded_gameplay")
+COMPRESSED_DIR: Path = DATA_DIR / Path("compressed_downloaded_gameplay")
+DEFAULT_RUNS_DIR: Path = DATA_DIR / Path("recorded_gameplay")
+PROCESSED_DATA_DIR: Path = DATA_DIR / Path("processed_recorded_gameplay")
+INVERSE_DYNAMIC_RUNS_DIR: Path = DATA_DIR / Path("id_runs")
 
 KEY_ORDER = [
     "w",
@@ -32,27 +36,15 @@ KEY_ORDER = [
     "ctrl",
 ]
 
-# ---------------------------------------------------------------------------
-# Shared
-# ---------------------------------------------------------------------------
+# Model Training
 
-DEFAULT_SEED = 42
-
-# ---------------------------------------------------------------------------
-# Preprocessing
-# ---------------------------------------------------------------------------
-
-DEFAULT_RUNS_DIR = Path("labeled_runs")
 DEFAULT_VAL_FRAC = 0.10
 DEFAULT_TEST_FRAC = 0.10
 DEFAULT_MAX_SAME_FRAMES = 60
 DEFAULT_TRIM_EDGE_FRAC = 0.01
 DEFAULT_DUPE_EPSILON = 1.0
 POS_WEIGHT_CLAMP = (0.1, 50.0)
-
-# ---------------------------------------------------------------------------
-# Training
-# ---------------------------------------------------------------------------
+DEFAULT_CHUNK_SIZE = 10000
 
 DEFAULT_BATCH_SIZE = 512
 DEFAULT_EPOCHS = 100
@@ -67,7 +59,7 @@ DEFAULT_FOCAL_GAMMA = 2.0
 ADAMW_WEIGHT_DECAY = 5e-3
 ADAMW_FUSED = True
 
-INPUT_CHANNELS = 2
+INPUT_CHANNELS = 4
 RESIDUAL_DROPOUT = 0.2
 VAL_BATCH_MULTIPLIER = 2
 
@@ -79,9 +71,7 @@ DEFAULT_THRESHOLD = 0.5
 CHECKPOINT_FREQ = 10
 RUN_TIMESTAMP_FORMAT = "%Y%m%d_%H%M"
 
-# ---------------------------------------------------------------------------
-# Plotting
-# ---------------------------------------------------------------------------
+# Matplotlib
 
 FIG_DPI = 150
 TRAINING_CURVES_FIGSIZE = (14, 10)
