@@ -14,15 +14,5 @@
   },
   "permission": {
     "lsp": "allow"
-  },
-  "command": {
-    "lint": {
-      "description": "Run ruff check --fix on the project",
-      "template": "Run `ruff check --fix .` to auto-fix lint issues. Report any remaining violations."
-    },
-    "typecheck": {
-      "description": "Run mypy type checker on the project",
-      "template": "Run `mypy .` to type-check the project. Report any failures."
-    }
   }
 }
