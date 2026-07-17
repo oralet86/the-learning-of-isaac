@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Train inverse dynamics model: (frame_t, frame_{t+1}) -> keys_t."""
+"""Train inverse dynamics model: (frame_t, frame_{t+1}, frame_{t+2}, frame_{t+3}) -> keys_{t+1}."""
 
 import argparse
 from collections import defaultdict
+from contextlib import nullcontext
 from functools import partial
 import json
 import math
-from pathlib import Path
+from pathlib import Path  # noqa: TC003
 import sys
 from typing import Any
 
@@ -15,23 +16,25 @@ import numpy as np
 import torch
 from torch.amp import GradScaler, autocast
 import torch.nn as nn
-import torch.nn.functional as F
+from torch.profiler import ProfilerActivity
 import torch.utils.data
 from tqdm import tqdm
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-from constants import (
-    ADAMW_FUSED,
+from components import InverseDynamicsResNet, focal_loss_with_logits
+from components.inverse_dynamics_resnet import (
     ADAMW_WEIGHT_DECAY,
-    CHECKPOINT_FREQ,
     DEFAULT_BATCH_SIZE,
     DEFAULT_DROPOUT,
+    VAL_BATCH_MULTIPLIER,
+)
+from constants import (
+    ADAMW_FUSED,
+    CHECKPOINT_FREQ,
+    COSINE_T_MAX_DIVISOR,
     DEFAULT_EPOCHS,
-    DEFAULT_FOCAL_GAMMA,
     DEFAULT_LR,
     DEFAULT_MIN_LR,
     DEFAULT_NUM_WORKERS,
@@ -40,23 +43,17 @@ from constants import (
     DEFAULT_SEED,
     DEFAULT_THRESHOLD,
     DEFAULT_TOP_K,
-    FIG_DPI,
-    INPUT_CHANNELS,
+    INVERSE_DYNAMIC_RUNS_DIR,
     METRICS_EPS,
-    PER_KEY_FIGSIZE,
     PROCESSED_DATA_DIR,
-    RESIDUAL_DROPOUT,
+    PROFILE_STEPS,
+    PROFILE_WAIT,
+    PROFILE_WARMUP,
     RUN_TIMESTAMP_FORMAT,
     THRESHOLD_CANDIDATES,
-    TRAINING_CURVES_FIGSIZE,
-    TRAINING_RUNS_DIR,
-    VAL_BATCH_MULTIPLIER,
     WORST_PRED_BATCH_SIZE,
-    WORST_PRED_CELL_HEIGHT,
-    WORST_PRED_CELL_WIDTH,
-    WORST_PRED_MAX_ROWS,
-    WORST_PRED_N_COLS,
 )
+from inverse_dynamics.dataloader import ChunkedDataset, build_loader
 
 
 def set_seed(seed: int = DEFAULT_SEED) -> None:
@@ -70,145 +67,6 @@ def get_device() -> torch.device:
     if torch.cuda.is_available():
         return torch.device("cuda")
     return torch.device("cpu")
-
-
-# ---------------------------------------------------------------------------
-# Model
-# ---------------------------------------------------------------------------
-
-
-class ResidualBlock(nn.Module):
-    def __init__(self, in_channels: int, out_channels: int, stride: int = 1):
-        super().__init__()
-        self.conv1 = nn.Conv2d(
-            in_channels,
-            out_channels,
-            kernel_size=3,
-            stride=stride,
-            padding=1,
-            bias=False,
-        )
-        self.bn1 = nn.BatchNorm2d(out_channels)
-        self.conv2 = nn.Conv2d(out_channels, out_channels, 3, 1, 1, bias=False)
-        self.bn2 = nn.BatchNorm2d(out_channels)
-        if stride != 1 or in_channels != out_channels:
-            self.downsample: nn.Module = nn.Sequential(
-                nn.Conv2d(in_channels, out_channels, 1, stride, bias=False),
-                nn.BatchNorm2d(out_channels),
-            )
-        else:
-            self.downsample = nn.Identity()
-
-        self.relu = nn.ReLU(inplace=True)
-        self.dropout = nn.Dropout2d(RESIDUAL_DROPOUT)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        identity = self.downsample(x)
-        out = self.relu(self.bn1(self.conv1(x)))
-        out = self.bn2(self.conv2(out))
-        out = self.dropout(out)
-        out += identity
-        return self.relu(out)
-
-
-class InverseDynamicsResNet(nn.Module):
-    def __init__(
-        self,
-        in_channels: int = INPUT_CHANNELS,
-        num_keys: int = 13,
-        dropout: float = 0.3,
-    ):
-        super().__init__()
-        self.conv1 = nn.Conv2d(in_channels, 16, 7, stride=2, padding=3, bias=False)
-        self.bn1 = nn.BatchNorm2d(16)
-        self.maxpool = nn.MaxPool2d(3, stride=2, padding=1)
-
-        self.layer1_block0 = ResidualBlock(16, 32, stride=1)
-        self.layer1_block1 = ResidualBlock(32, 32, stride=1)
-        self.layer2_block0 = ResidualBlock(32, 96, stride=2)
-        self.layer2_block1 = ResidualBlock(96, 96, stride=1)
-        self.layer3_block0 = ResidualBlock(96, 200, stride=2)
-        self.layer3_block1 = ResidualBlock(200, 200, stride=1)
-        self.layer4_block0 = ResidualBlock(200, 320, stride=2)
-        self.layer4_block1 = ResidualBlock(320, 320, stride=1)
-
-        self.avgpool = nn.AdaptiveAvgPool2d(1)
-        self.relu = nn.ReLU(inplace=True)
-        self.dropout = nn.Dropout(dropout)
-        self.fc = nn.Linear(320, num_keys)
-
-        self._init_weights()
-
-    def _init_weights(self) -> None:
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
-            elif isinstance(m, nn.BatchNorm2d):
-                nn.init.constant_(m.weight, 1)
-                nn.init.constant_(m.bias, 0)
-            elif isinstance(m, nn.Linear):
-                nn.init.normal_(m.weight, 0, 0.01)
-                nn.init.constant_(m.bias, 0)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.relu(self.bn1(self.conv1(x)))
-        x = self.maxpool(x)
-        x = self.layer1_block0(x)
-        x = self.layer1_block1(x)
-        x = self.layer2_block0(x)
-        x = self.layer2_block1(x)
-        x = self.layer3_block0(x)
-        x = self.layer3_block1(x)
-        x = self.layer4_block0(x)
-        x = self.layer4_block1(x)
-        x = self.avgpool(x)
-        x = torch.flatten(x, 1)
-        x = self.dropout(x)
-        return self.fc(x)
-
-
-# ---------------------------------------------------------------------------
-# Dataset
-# ---------------------------------------------------------------------------
-
-
-class PreprocessedDataset(torch.utils.data.Dataset[tuple[torch.Tensor, torch.Tensor]]):
-    def __init__(self, x_path: str | Path, y_path: str | Path):
-        self.X = np.load(x_path)
-        self.y = np.load(y_path)
-
-    def __len__(self) -> int:
-        return len(self.X)
-
-    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
-        x = torch.from_numpy(self.X[idx])
-        y = torch.from_numpy(self.y[idx])
-        return x, y
-
-
-# ---------------------------------------------------------------------------
-# Focal Loss
-# ---------------------------------------------------------------------------
-
-
-def focal_loss_with_logits(
-    logits: torch.Tensor,
-    targets: torch.Tensor,
-    alpha: torch.Tensor,
-    gamma: float,
-    reduction: str = "mean",
-) -> torch.Tensor:
-    p = torch.sigmoid(logits)
-    p_t = targets * p + (1.0 - targets) * (1.0 - p)
-    modulating = (1.0 - p_t).pow(gamma)
-    bce = F.binary_cross_entropy_with_logits(logits, targets, reduction="none")
-    alpha_t = targets * alpha + (1.0 - targets) * (1.0 - alpha)
-    loss = alpha_t * modulating * bce
-    if reduction == "mean":
-        return loss.mean()
-    if reduction == "sum":
-        return loss.sum()
-    return loss
 
 
 # ---------------------------------------------------------------------------
@@ -307,23 +165,6 @@ def aggregate_metrics(metrics_list: list[dict[str, Any]]) -> dict[str, Any]:
     return result
 
 
-def compute_light_metrics(
-    logits: torch.Tensor, targets: torch.Tensor
-) -> dict[str, Any]:
-    probs = torch.sigmoid(logits)
-    preds = (probs > DEFAULT_THRESHOLD).float()
-    correct = (preds == targets).float()
-    overall_acc = correct.mean().item()
-    no_action_mask = targets.sum(dim=1) == 0
-    n_zeros = no_action_mask.sum().item()
-    no_action_acc = correct[no_action_mask].mean().item() if n_zeros > 0 else 0.0
-    return {
-        "overall_acc": overall_acc,
-        "no_action_acc": no_action_acc,
-        "no_action_count": int(n_zeros),
-    }
-
-
 # ---------------------------------------------------------------------------
 # Training / validation loops
 # ---------------------------------------------------------------------------
@@ -393,19 +234,19 @@ def train_epoch(
     device: torch.device,
     _key_names: list[str],
     epoch: int,
+    profiler: Any = None,
 ) -> dict[str, Any]:
     model.train()
     running_loss = 0.0
-    running_acc = 0.0
     n_batches = 0
     pbar = tqdm(loader, desc=f"Epoch {epoch:3d} train", unit="batch", leave=False)
     for x, y in pbar:
-        x = (
-            x.to(device, non_blocking=True)
-            .to(dtype=torch.float16)
-            .div_(255.0)
-            .to(memory_format=torch.channels_last)
-        )
+        x = x.to(
+            device,
+            non_blocking=True,
+            dtype=torch.float16,
+            memory_format=torch.channels_last,
+        ).div_(255.0)
         y = y.to(device, non_blocking=True, dtype=torch.float32)
         optimizer.zero_grad(set_to_none=True)
 
@@ -417,12 +258,15 @@ def train_epoch(
         scaler.step(optimizer)
         scaler.update()
 
-        running_loss += loss.item()
-        running_acc += compute_light_metrics(logits.detach(), y)["overall_acc"]
+        loss_val = loss.item()
+        running_loss += loss_val
         n_batches += 1
-        pbar.set_postfix(loss=f"{loss.item():.4f}")
+        if n_batches % 50 == 0:
+            pbar.set_postfix(loss=f"{loss_val:.4f}")
+        if profiler is not None:
+            profiler.step()
 
-    return {"loss": running_loss / n_batches, "overall_acc": running_acc / n_batches}
+    return {"loss": running_loss / n_batches}
 
 
 @torch.no_grad()
@@ -470,7 +314,7 @@ def plot_training_curves(
     history: dict[str, list[float]], out_path: Path, _key_names: list[str]
 ) -> None:
     epochs = range(1, len(history["train_loss"]) + 1)
-    fig, axes = plt.subplots(2, 2, figsize=TRAINING_CURVES_FIGSIZE)
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
 
     ax = axes[0, 0]
     ax.plot(epochs, history["train_loss"], label="train", linewidth=1.5)
@@ -491,7 +335,6 @@ def plot_training_curves(
     ax.grid(True, alpha=0.3)
 
     ax = axes[1, 0]
-    ax.plot(epochs, history["train_overall_acc"], label="train", linewidth=1.5)
     ax.plot(epochs, history["val_overall_acc"], label="val", linewidth=1.5)
     ax.plot(
         epochs,
@@ -523,14 +366,14 @@ def plot_training_curves(
     ax.grid(True, alpha=0.3)
 
     fig.tight_layout()
-    fig.savefig(out_path, dpi=FIG_DPI)
+    fig.savefig(out_path, dpi=150)
     plt.close(fig)
 
 
 def plot_per_key_metrics(
     best_metrics: dict[str, float], out_path: Path, key_names: list[str]
 ) -> None:
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=PER_KEY_FIGSIZE)
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
 
     keys = key_names
     accs = [best_metrics.get(f"acc_{k}", 0) for k in keys]
@@ -556,7 +399,7 @@ def plot_per_key_metrics(
         ax2.text(v + 0.01, i, f"{v:.3f}", va="center", fontsize=8)
 
     fig.tight_layout()
-    fig.savefig(out_path, dpi=FIG_DPI)
+    fig.savefig(out_path, dpi=150)
     plt.close(fig)
 
 
@@ -640,13 +483,13 @@ def plot_worst_predictions_for_key(
     if n_items == 0:
         return
 
-    n_cols = WORST_PRED_N_COLS
-    n_rows = min(WORST_PRED_MAX_ROWS, int(np.ceil(n_items / n_cols)))
+    n_cols = 5
+    n_rows = min(4, int(np.ceil(n_items / n_cols)))
 
     fig, axes = plt.subplots(
         n_rows,
         n_cols,
-        figsize=(n_cols * WORST_PRED_CELL_WIDTH, n_rows * WORST_PRED_CELL_HEIGHT),
+        figsize=(n_cols * 4.5, n_rows * 2.8),
     )
     if n_rows == 1:
         axes = axes.reshape(1, -1)
@@ -662,7 +505,9 @@ def plot_worst_predictions_for_key(
         prob = item["prob"]
         loss = item["loss"]
 
-        pair_img = np.concatenate([frames[0], frames[1]], axis=1)
+        top = np.concatenate([frames[0], frames[1]], axis=1)
+        bottom = np.concatenate([frames[2], frames[3]], axis=1)
+        pair_img = np.concatenate([top, bottom], axis=0)
 
         ax.imshow(pair_img, cmap="gray", aspect="auto")
         ax.axis("off")
@@ -685,7 +530,7 @@ def plot_worst_predictions_for_key(
         f"Worst predictions for key: {key_name}", fontsize=12, fontweight="bold"
     )
     fig.tight_layout()
-    fig.savefig(out_path, dpi=FIG_DPI)
+    fig.savefig(out_path, dpi=150)
     plt.close(fig)
 
 
@@ -694,56 +539,43 @@ def plot_worst_predictions_for_key(
 # ---------------------------------------------------------------------------
 
 
-def build_loader(
-    dataset: torch.utils.data.Dataset[tuple[torch.Tensor, torch.Tensor]],
-    batch_size: int,
-    shuffle: bool,
-    num_workers: int = 8,
-    pin_memory: bool = True,
-) -> torch.utils.data.DataLoader[tuple[torch.Tensor, torch.Tensor]]:
-    return torch.utils.data.DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=shuffle,
-        num_workers=num_workers,
-        pin_memory=pin_memory,
-        drop_last=False,
-        persistent_workers=num_workers > 0,
-        prefetch_factor=(2 if num_workers > 0 else None),
-    )
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train inverse dynamics model")
-    parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
     parser.add_argument("--epochs", type=int, default=DEFAULT_EPOCHS)
-    parser.add_argument("--lr", type=float, default=DEFAULT_LR)
-    parser.add_argument("--min-lr", type=float, default=DEFAULT_MIN_LR)
-    parser.add_argument("--dropout", type=float, default=DEFAULT_DROPOUT)
-    parser.add_argument("--patience", type=int, default=DEFAULT_PATIENCE)
-    parser.add_argument(
-        "--plateau-epochs",
-        type=int,
-        default=DEFAULT_PLATEAU_EPOCHS,
-        help="Epochs to hold at max LR before cosine decay",
-    )
-    parser.add_argument("--cosine-t-max", type=int, default=None)
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
-    parser.add_argument("--num-workers", type=int, default=DEFAULT_NUM_WORKERS)
     parser.add_argument(
-        "--gamma", type=float, default=DEFAULT_FOCAL_GAMMA, help="Focal loss gamma"
+        "--profile",
+        action="store_true",
+        help="Profile the first epoch of training and dump a Chrome trace.",
+    )
+    parser.add_argument(
+        "--profile-detailed",
+        action="store_true",
+        help="Like --profile, but also record memory and input shapes.",
     )
     args = parser.parse_args()
 
     from datetime import datetime
 
-    out_dir = TRAINING_RUNS_DIR / f"run_{datetime.now().strftime(RUN_TIMESTAMP_FORMAT)}"
+    batch_size = DEFAULT_BATCH_SIZE
+    lr = DEFAULT_LR
+    min_lr = DEFAULT_MIN_LR
+    dropout = DEFAULT_DROPOUT
+    patience = DEFAULT_PATIENCE
+    plateau_epochs = DEFAULT_PLATEAU_EPOCHS
+    num_workers = DEFAULT_NUM_WORKERS
+    cosine_t_max = max(args.epochs // COSINE_T_MAX_DIVISOR, 1)
+    min_lr_ratio = min_lr / lr
+
+    out_dir = (
+        INVERSE_DYNAMIC_RUNS_DIR
+        / f"run_{datetime.now().strftime(RUN_TIMESTAMP_FORMAT)}"
+    )
 
     set_seed(args.seed)
     torch.set_float32_matmul_precision("high")
 
-    dataset_dir = PROCESSED_DATA_DIR / "dataset"
-    info_path = dataset_dir / "dataset_info.json"
+    info_path = PROCESSED_DATA_DIR / "dataset_info.json"
     if not info_path.exists():
         sys.exit(
             f"{info_path} not found. Run preprocess.py first to prepare the dataset."
@@ -763,39 +595,32 @@ def main() -> None:
     print(
         f"Focal alpha: {dict(zip(key_names, [f'{a:.3f}' for a in alpha.tolist()], strict=True))}"
     )
-    print(f"Focal gamma: {args.gamma}")
 
-    train_ds = PreprocessedDataset(
-        dataset_dir / "train_X.npy", dataset_dir / "train_y.npy"
-    )
-    val_ds = PreprocessedDataset(dataset_dir / "val_X.npy", dataset_dir / "val_y.npy")
-    test_ds = PreprocessedDataset(
-        dataset_dir / "test_X.npy", dataset_dir / "test_y.npy"
-    )
+    train_ds = ChunkedDataset(PROCESSED_DATA_DIR / "train")
+    val_ds = ChunkedDataset(PROCESSED_DATA_DIR / "val")
+    test_ds = ChunkedDataset(PROCESSED_DATA_DIR / "test")
     print(f"Split: train={len(train_ds):,}  val={len(val_ds):,}  test={len(test_ds):,}")
 
     device = get_device()
     print(f"Device: {device}")
 
     train_loader = build_loader(
-        train_ds, args.batch_size, shuffle=True, num_workers=args.num_workers
+        train_ds, batch_size, shuffle=True, num_workers=num_workers
     )
     val_loader = build_loader(
         val_ds,
-        args.batch_size * VAL_BATCH_MULTIPLIER,
+        batch_size * VAL_BATCH_MULTIPLIER,
         shuffle=False,
-        num_workers=args.num_workers,
+        num_workers=num_workers,
     )
     test_loader = build_loader(
         test_ds,
-        args.batch_size * VAL_BATCH_MULTIPLIER,
+        batch_size * VAL_BATCH_MULTIPLIER,
         shuffle=False,
-        num_workers=args.num_workers,
+        num_workers=num_workers,
     )
 
-    model = InverseDynamicsResNet(
-        in_channels=INPUT_CHANNELS, num_keys=num_keys, dropout=args.dropout
-    )
+    model = InverseDynamicsResNet(num_keys=num_keys, dropout=dropout)
     model = model.to(device, memory_format=torch.channels_last)  # type: ignore[call-overload]
     try:
         model = torch.compile(model)  # type: ignore[assignment]
@@ -805,20 +630,13 @@ def main() -> None:
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Model params: {n_params:,}")
 
-    criterion = partial(
-        focal_loss_with_logits, alpha=alpha.to(device), gamma=args.gamma
-    )
+    criterion = partial(focal_loss_with_logits, alpha=alpha.to(device))
     optimizer = torch.optim.AdamW(
         model.parameters(),
-        lr=args.lr,
+        lr=lr,
         weight_decay=ADAMW_WEIGHT_DECAY,
         fused=ADAMW_FUSED,
     )
-    cosine_t_max = (
-        args.cosine_t_max if args.cosine_t_max is not None else max(args.epochs // 3, 1)
-    )
-    plateau_epochs = args.plateau_epochs
-    min_lr_ratio = args.min_lr / args.lr
 
     def lr_lambda(epoch: int) -> float:
         if epoch < plateau_epochs:
@@ -835,12 +653,34 @@ def main() -> None:
 
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    if args.profile or args.profile_detailed:
+        detailed = args.profile_detailed
+        prof = torch.profiler.profile(
+            activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+            schedule=torch.profiler.schedule(
+                wait=PROFILE_WAIT,
+                warmup=PROFILE_WARMUP,
+                active=PROFILE_STEPS,
+                repeat=1,
+            ),
+            record_shapes=detailed,
+            profile_memory=detailed,
+        )
+        prof_ctx: Any = prof
+        print(
+            f"Profiling enabled: wait={PROFILE_WAIT} warmup={PROFILE_WARMUP} "
+            f"active={PROFILE_STEPS} detailed={detailed}"
+        )
+    else:
+        prof = None
+        prof_ctx = nullcontext()
+
     history: dict[str, list[float]] = defaultdict(list)
     best_val_f1 = -1.0
     best_epoch = 0
     patience_counter = 0
 
-    print(f"\nTraining for up to {args.epochs} epochs (patience={args.patience})...")
+    print(f"\nTraining for up to {args.epochs} epochs (patience={patience})...")
 
     model.train()
 
@@ -850,15 +690,31 @@ def main() -> None:
     print("-" * 65)
 
     for epoch in range(1, args.epochs + 1):
-        train_metrics = train_epoch(
-            model, train_loader, criterion, optimizer, scaler, device, key_names, epoch
-        )
+        with prof_ctx:
+            train_metrics = train_epoch(
+                model,
+                train_loader,
+                criterion,
+                optimizer,
+                scaler,
+                device,
+                key_names,
+                epoch,
+                profiler=prof,
+            )
+        if prof is not None:
+            prof.stop()
+            trace_path = out_dir / "train_trace.json"
+            prof.export_chrome_trace(str(trace_path))
+            print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=30))
+            print(f"Profiler trace saved to {trace_path}")
+            prof_ctx = nullcontext()
+            prof = None
         val_metrics = eval_epoch(model, val_loader, criterion, device, key_names, epoch)
         scheduler.step()
         current_lr = scheduler.get_last_lr()[0]
 
         history["train_loss"].append(train_metrics["loss"])
-        history["train_overall_acc"].append(train_metrics["overall_acc"])
         history["train_macro_f1"].append(val_metrics["macro_f1"])  # val as proxy
         history["train_micro_f1"].append(val_metrics["micro_f1"])
         history["train_no_action_acc"].append(val_metrics["no_action_acc"])
@@ -902,9 +758,9 @@ def main() -> None:
                 out_dir / f"checkpoint_epoch{epoch:03d}.pt",
             )
 
-        if patience_counter >= args.patience:
+        if patience_counter >= patience:
             print(
-                f"\nEarly stopping at epoch {epoch} (no improvement for {args.patience} epochs)"
+                f"\nEarly stopping at epoch {epoch} (no improvement for {patience} epochs)"
             )
             break
 
@@ -976,17 +832,16 @@ def main() -> None:
         "history": {k: v[-1] for k, v in history.items() if k.startswith("val_")},
         "config": {
             "loss": "focal",
-            "gamma": args.gamma,
-            "batch_size": args.batch_size,
+            "batch_size": batch_size,
             "epochs": epoch,
-            "lr": args.lr,
-            "min_lr": args.min_lr,
-            "dropout": args.dropout,
-            "patience": args.patience,
+            "lr": lr,
+            "min_lr": min_lr,
+            "dropout": dropout,
+            "patience": patience,
             "plateau_epochs": plateau_epochs,
             "cosine_t_max": cosine_t_max,
             "model_params": n_params,
-            "train_pairs": len(train_ds),
+            "train_windows": len(train_ds),
             "val_pairs": len(val_ds),
             "test_pairs": len(test_ds),
         },
