@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from constants import (
     CHUNK_SIZE,
     DUPE_EPSILON,
+    INPUT_CHANNELS,
     KEY_ORDER,
     MAX_SAME_FRAMES,
     PROCESSED_DATA_DIR,
@@ -147,23 +148,21 @@ def remove_long_identical_runs(
 
 
 def build_windows(
-    frames: np.ndarray, labels: np.ndarray
+    frames: np.ndarray, labels: np.ndarray, n_frames: int
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    n_windows = len(frames) - 3
+    n_windows = len(frames) - n_frames + 1
     if n_windows <= 0:
         return (
-            np.empty((0, 4, *frames.shape[1:]), dtype=np.uint8),
+            np.empty((0, n_frames, *frames.shape[1:]), dtype=np.uint8),
             np.empty((0, labels.shape[1]), dtype=np.uint8),
             np.empty((0, 2), dtype=np.int32),
         )
 
-    windows = np.empty((n_windows, 4, *frames.shape[1:]), dtype=np.uint8)
-    windows[:, 0] = frames[:n_windows]
-    windows[:, 1] = frames[1 : n_windows + 1]
-    windows[:, 2] = frames[2 : n_windows + 2]
-    windows[:, 3] = frames[3 : n_windows + 3]
+    windows = np.empty((n_windows, n_frames, *frames.shape[1:]), dtype=np.uint8)
+    for i in range(n_frames):
+        windows[:, i] = frames[i : n_windows + i]
 
-    window_labels = labels[1 : n_windows + 1]
+    window_labels = labels[:n_windows]
     window_map = np.empty((n_windows, 2), dtype=np.int32)
     window_map[:, 1] = np.arange(n_windows, dtype=np.int32)
 
@@ -216,7 +215,7 @@ def process_run(
         n_dupes_removed = n_before - len(frames)
         n = len(frames)
 
-    windows, window_labels, window_map = build_windows(frames, labels)
+    windows, window_labels, window_map = build_windows(frames, labels, INPUT_CHANNELS)
 
     if len(windows) == 0:
         return None
@@ -255,7 +254,9 @@ def stream_to_chunks(
     chunks_dir.mkdir(parents=True, exist_ok=True)
 
     n_keys = len(key_to_idx)
-    buf_X = np.empty((chunk_size, 4, TARGET_HEIGHT, TARGET_WIDTH), dtype=np.uint8)
+    buf_X = np.empty(
+        (chunk_size, INPUT_CHANNELS, TARGET_HEIGHT, TARGET_WIDTH), dtype=np.uint8
+    )
     buf_y = np.empty((chunk_size, n_keys), dtype=np.uint8)
     buf_map = np.empty((chunk_size, 2), dtype=np.int32)
     buf_pos = 0
@@ -383,7 +384,10 @@ def split_chunks(
     def make_buf(split_dir: Path, with_map: bool) -> dict:
         return {
             "dir": split_dir,
-            "X": np.empty((CHUNK_SIZE, 4, TARGET_HEIGHT, TARGET_WIDTH), dtype=np.uint8),
+            "X": np.empty(
+                (CHUNK_SIZE, INPUT_CHANNELS, TARGET_HEIGHT, TARGET_WIDTH),
+                dtype=np.uint8,
+            ),
             "y": np.empty((CHUNK_SIZE, n_keys), dtype=np.uint8),
             "map": np.empty((CHUNK_SIZE, 2), dtype=np.int32) if with_map else None,
             "pos": 0,
@@ -479,7 +483,7 @@ def prepare_dataset_info(
     out_dir: Path,
     stream_stats: dict,
     split_info: dict,
-    transforms: list["DatasetTransform"] | None,
+    transforms: list["DatasetTransform"],
     val_frac: float,
     test_frac: float,
     seed: int,

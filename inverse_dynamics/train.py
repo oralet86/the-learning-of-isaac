@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Train inverse dynamics model: (frame_t, frame_{t+1}, frame_{t+2}, frame_{t+3}) -> keys_{t+1}."""
+"""Train inverse dynamics model: (frame_t, frame_{t+1}) -> keys_t."""
 
 import argparse
 from collections import defaultdict
@@ -519,9 +519,8 @@ def plot_worst_predictions_for_key(
         prob = item["prob"]
         loss = item["loss"]
 
-        top = np.concatenate([frames[0], frames[1]], axis=1)
-        bottom = np.concatenate([frames[2], frames[3]], axis=1)
-        pair_img = np.concatenate([top, bottom], axis=0)
+        n_ch = len(frames)
+        pair_img = np.concatenate([frames[i] for i in range(n_ch)], axis=1)
 
         ax.imshow(pair_img, cmap="gray", aspect="auto")
         ax.axis("off")
@@ -712,7 +711,7 @@ def main() -> None:
         scheduler.step()
         current_lr = scheduler.get_last_lr()[0]
 
-        history["train_loss"].append(train_metrics["loss"])
+        history["train_loss"].append(train_metrics["loss"].item())
         history["train_macro_f1"].append(val_metrics["macro_f1"])  # val as proxy
         history["train_micro_f1"].append(val_metrics["micro_f1"])
         history["train_no_action_acc"].append(val_metrics["no_action_acc"])
@@ -831,7 +830,7 @@ def main() -> None:
         "config": {
             "loss": "focal",
             "batch_size": BATCH_SIZE,
-            "epochs": epoch,
+            "epochs": len(history["train_loss"]),
             "lr": LR,
             "min_lr": MIN_LR,
             "dropout": DROPOUT,

@@ -3,10 +3,11 @@
 import torch
 import torch.nn as nn
 
-INPUT_CHANNELS = 4
+from constants import INPUT_CHANNELS
+
 RESIDUAL_DROPOUT = 0.2
 DROPOUT = 0.4
-BATCH_SIZE = 512
+BATCH_SIZE = 128
 VAL_BATCH_MULTIPLIER = 2
 ADAMW_WEIGHT_DECAY = 5e-3
 
