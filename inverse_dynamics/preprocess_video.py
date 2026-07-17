@@ -17,18 +17,18 @@ from tqdm import tqdm
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from constants import (
-    DEFAULT_CHUNK_SIZE,
-    DEFAULT_DUPE_EPSILON,
-    DEFAULT_MAX_SAME_FRAMES,
-    DEFAULT_RUNS_DIR,
-    DEFAULT_SEED,
-    DEFAULT_TEST_FRAC,
-    DEFAULT_TRIM_EDGE_FRAC,
-    DEFAULT_VAL_FRAC,
+    CHUNK_SIZE,
+    DUPE_EPSILON,
     KEY_ORDER,
+    MAX_SAME_FRAMES,
     PROCESSED_DATA_DIR,
+    RUNS_DIR,
+    SEED,
     TARGET_HEIGHT,
     TARGET_WIDTH,
+    TEST_FRAC,
+    TRIM_EDGE_FRAC,
+    VAL_FRAC,
 )
 
 if TYPE_CHECKING:
@@ -380,18 +380,12 @@ def split_chunks(
     chunk_y_paths = sorted(chunks_dir.glob("chunk_*_y.npy"))
     chunk_map_paths = sorted(chunks_dir.glob("chunk_*_map.npy"))
 
-    chunk_size_param = DEFAULT_CHUNK_SIZE
-
     def make_buf(split_dir: Path, with_map: bool) -> dict:
         return {
             "dir": split_dir,
-            "X": np.empty(
-                (chunk_size_param, 4, TARGET_HEIGHT, TARGET_WIDTH), dtype=np.uint8
-            ),
-            "y": np.empty((chunk_size_param, n_keys), dtype=np.uint8),
-            "map": np.empty((chunk_size_param, 2), dtype=np.int32)
-            if with_map
-            else None,
+            "X": np.empty((CHUNK_SIZE, 4, TARGET_HEIGHT, TARGET_WIDTH), dtype=np.uint8),
+            "y": np.empty((CHUNK_SIZE, n_keys), dtype=np.uint8),
+            "map": np.empty((CHUNK_SIZE, 2), dtype=np.int32) if with_map else None,
             "pos": 0,
             "chunk_id": 0,
             "count": 0,
@@ -415,7 +409,7 @@ def split_chunks(
         buf["count"] += n
         src = 0
         while src < n:
-            space = chunk_size_param - buf["pos"]
+            space = CHUNK_SIZE - buf["pos"]
             take = min(space, n - src)
             buf["X"][buf["pos"] : buf["pos"] + take] = X[src : src + take]
             buf["y"][buf["pos"] : buf["pos"] + take] = y[src : src + take]
@@ -423,7 +417,7 @@ def split_chunks(
                 buf["map"][buf["pos"] : buf["pos"] + take] = map_[src : src + take]
             buf["pos"] += take
             src += take
-            if buf["pos"] == chunk_size_param:
+            if buf["pos"] == CHUNK_SIZE:
                 flush(buf)
 
     train_buf = make_buf(train_dir, with_map=False)
@@ -548,7 +542,7 @@ def main() -> None:
     parser.add_argument(
         "--runs-dir",
         type=Path,
-        default=DEFAULT_RUNS_DIR,
+        default=RUNS_DIR,
         help="Directory containing run_* subdirectories",
     )
     parser.add_argument(
@@ -560,43 +554,43 @@ def main() -> None:
     parser.add_argument(
         "--val-frac",
         type=float,
-        default=DEFAULT_VAL_FRAC,
+        default=VAL_FRAC,
         help="Fraction of data for validation",
     )
     parser.add_argument(
         "--test-frac",
         type=float,
-        default=DEFAULT_TEST_FRAC,
+        default=TEST_FRAC,
         help="Fraction of data for testing",
     )
     parser.add_argument(
         "--seed",
         type=int,
-        default=DEFAULT_SEED,
+        default=SEED,
         help="Random seed for train/val/test split",
     )
     parser.add_argument(
         "--chunk-size",
         type=int,
-        default=DEFAULT_CHUNK_SIZE,
+        default=CHUNK_SIZE,
         help="Number of windows per chunk file",
     )
     parser.add_argument(
         "--max-same-frames",
         type=int,
-        default=DEFAULT_MAX_SAME_FRAMES,
+        default=MAX_SAME_FRAMES,
         help="Max consecutive identical frames before removing duplicates",
     )
     parser.add_argument(
         "--trim-edge-frac",
         type=float,
-        default=DEFAULT_TRIM_EDGE_FRAC,
+        default=TRIM_EDGE_FRAC,
         help="Fraction of frames to trim from start and end of each run",
     )
     parser.add_argument(
         "--dupe-epsilon",
         type=float,
-        default=DEFAULT_DUPE_EPSILON,
+        default=DUPE_EPSILON,
         help="Mean absolute pixel difference threshold for identical-frame detection",
     )
     args = parser.parse_args()

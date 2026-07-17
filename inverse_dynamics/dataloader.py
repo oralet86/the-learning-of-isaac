@@ -5,9 +5,13 @@ from pathlib import Path  # noqa: TC003
 
 import numpy as np
 import torch
+from torch import Tensor
+from torch.utils.data import DataLoader, Dataset
+
+from constants import NUM_WORKERS
 
 
-class ChunkedDataset(torch.utils.data.Dataset[tuple[torch.Tensor, torch.Tensor]]):
+class ChunkedDataset(Dataset[tuple[Tensor, Tensor]]):
     """Lazily loads frame window chunks from a directory.
 
     Expects a directory containing paired files:
@@ -46,7 +50,7 @@ class ChunkedDataset(torch.utils.data.Dataset[tuple[torch.Tensor, torch.Tensor]]
     def __len__(self) -> int:
         return self.cumulative_sizes[-1] if self.cumulative_sizes else 0
 
-    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+    def __getitem__(self, idx: int) -> tuple[Tensor, Tensor]:
         if idx < 0:
             idx += len(self)
         if idx < 0 or idx >= len(self):
@@ -71,19 +75,19 @@ class ChunkedDataset(torch.utils.data.Dataset[tuple[torch.Tensor, torch.Tensor]]
 
 
 def build_loader(
-    dataset: torch.utils.data.Dataset[tuple[torch.Tensor, torch.Tensor]],
+    dataset: Dataset[tuple[Tensor, Tensor]],
     batch_size: int,
     shuffle: bool,
-    num_workers: int = 8,
+    num_workers: int = NUM_WORKERS,
     pin_memory: bool = True,
-) -> torch.utils.data.DataLoader[tuple[torch.Tensor, torch.Tensor]]:
-    return torch.utils.data.DataLoader(
+) -> DataLoader[tuple[Tensor, Tensor]]:
+    return DataLoader(
         dataset,
         batch_size=batch_size,
         shuffle=shuffle,
         num_workers=num_workers,
         pin_memory=pin_memory,
-        drop_last=False,
+        drop_last=True,
         persistent_workers=num_workers > 0,
         prefetch_factor=(2 if num_workers > 0 else None),
     )

@@ -4,12 +4,13 @@
 import argparse
 from collections import defaultdict
 from contextlib import nullcontext
+from datetime import datetime
 from functools import partial
 import json
 import math
 from pathlib import Path  # noqa: TC003
 import sys
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import matplotlib
 import numpy as np
@@ -17,46 +18,53 @@ import torch
 from torch.amp import GradScaler, autocast
 import torch.nn as nn
 from torch.profiler import ProfilerActivity
-import torch.utils.data
 from tqdm import tqdm
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from torch.utils.data import DataLoader
 
 from components import InverseDynamicsResNet, focal_loss_with_logits
 from components.inverse_dynamics_resnet import (
     ADAMW_WEIGHT_DECAY,
-    DEFAULT_BATCH_SIZE,
-    DEFAULT_DROPOUT,
+    BATCH_SIZE,
+    DROPOUT,
     VAL_BATCH_MULTIPLIER,
 )
 from constants import (
     ADAMW_FUSED,
     CHECKPOINT_FREQ,
     COSINE_T_MAX_DIVISOR,
-    DEFAULT_EPOCHS,
-    DEFAULT_LR,
-    DEFAULT_MIN_LR,
-    DEFAULT_NUM_WORKERS,
-    DEFAULT_PATIENCE,
-    DEFAULT_PLATEAU_EPOCHS,
-    DEFAULT_SEED,
-    DEFAULT_THRESHOLD,
-    DEFAULT_TOP_K,
+    EPOCHS,
+    EPSILON,
     INVERSE_DYNAMIC_RUNS_DIR,
-    METRICS_EPS,
+    LR,
+    MIN_LR,
+    NUM_WORKERS,
+    PATIENCE,
+    PLATEAU_EPOCHS,
     PROCESSED_DATA_DIR,
     PROFILE_STEPS,
     PROFILE_WAIT,
     PROFILE_WARMUP,
     RUN_TIMESTAMP_FORMAT,
+    SEED,
+    THRESHOLD,
     THRESHOLD_CANDIDATES,
+    TOP_K,
     WORST_PRED_BATCH_SIZE,
 )
 from inverse_dynamics.dataloader import ChunkedDataset, build_loader
 
+torch.set_float32_matmul_precision(precision="high")
+torch.backends.cudnn.benchmark = True
 
-def set_seed(seed: int = DEFAULT_SEED) -> None:
+if TYPE_CHECKING:
+    from torch import Tensor
+    from torch.utils.data import Dataset
+
+
+def set_seed(seed: int = SEED) -> None:
     torch.manual_seed(seed)
     np.random.seed(seed)
     if torch.cuda.is_available():
@@ -65,8 +73,8 @@ def set_seed(seed: int = DEFAULT_SEED) -> None:
 
 def get_device() -> torch.device:
     if torch.cuda.is_available():
-        return torch.device("cuda")
-    return torch.device("cpu")
+        return torch.device(device="cuda")
+    raise BaseException("CUDA not available!!")
 
 
 # ---------------------------------------------------------------------------
@@ -83,7 +91,7 @@ def compute_metrics(
 ) -> dict[str, Any]:
     probs = torch.sigmoid(logits)
     if thresholds is None:
-        preds = (probs > DEFAULT_THRESHOLD).float()
+        preds = (probs > THRESHOLD).float()
     else:
         threshold_tensor = torch.tensor(
             [thresholds[k] for k in key_names], device=probs.device, dtype=probs.dtype
@@ -97,7 +105,7 @@ def compute_metrics(
     fp = (preds * (1 - targets)).sum(dim=0).float()
     fn = ((1 - preds) * targets).sum(dim=0).float()
 
-    eps = METRICS_EPS
+    eps = EPSILON
     per_key_precision = tp / (tp + fp + eps)
     per_key_recall = tp / (tp + fn + eps)
     per_key_f1 = (
@@ -173,7 +181,7 @@ def aggregate_metrics(metrics_list: list[dict[str, Any]]) -> dict[str, Any]:
 @torch.no_grad()
 def find_optimal_thresholds(
     model: nn.Module,
-    val_loader: torch.utils.data.DataLoader[tuple[torch.Tensor, torch.Tensor]],
+    val_loader: DataLoader[tuple[torch.Tensor, torch.Tensor]],
     device: torch.device,
     key_names: list[str],
 ) -> tuple[dict[str, float], dict[str, float]]:
@@ -181,31 +189,31 @@ def find_optimal_thresholds(
     all_logits: list[torch.Tensor] = []
     all_targets: list[torch.Tensor] = []
     for x, y in val_loader:
-        x = (
+        x: Tensor = (
             x.to(device, non_blocking=True)
             .to(dtype=torch.float16)
             .div_(255.0)
             .to(memory_format=torch.channels_last)
         )
-        with autocast("cuda"):
-            logits = model(x)
+        with autocast(device_type="cuda"):
+            logits: Tensor = model(x)
 
         all_logits.append(logits.cpu())
         all_targets.append(y)
-    logits_cat = torch.cat(all_logits)
-    targets_cat = torch.cat(all_targets)
-    probs = torch.sigmoid(logits_cat)
+    logits_cat: Tensor = torch.cat(all_logits)
+    targets_cat: Tensor = torch.cat(all_targets)
+    probs: Tensor = torch.sigmoid(logits_cat)
 
     best_thresholds: dict[str, float] = {}
     best_f1s: dict[str, float] = {}
 
     thresholds_candidates = np.linspace(0.0, 1.0, THRESHOLD_CANDIDATES)[1:-1]
 
-    for k, key_name in enumerate(key_names):
+    for k, key_name in enumerate(iterable=key_names):
         p = probs[:, k].numpy()
         t = targets_cat[:, k].numpy()
 
-        best_t = DEFAULT_THRESHOLD
+        best_t = THRESHOLD
         best_f1 = 0.0
         for threshold in thresholds_candidates:
             preds = (p >= threshold).astype(np.float32)
@@ -227,52 +235,58 @@ def find_optimal_thresholds(
 
 def train_epoch(
     model: nn.Module,
-    loader: torch.utils.data.DataLoader[tuple[torch.Tensor, torch.Tensor]],
-    criterion: Any,
+    loader: DataLoader[tuple[torch.Tensor, torch.Tensor]],
+    train_step: Any,
     optimizer: torch.optim.Optimizer,
     scaler: GradScaler,
     device: torch.device,
-    _key_names: list[str],
     epoch: int,
     profiler: Any = None,
 ) -> dict[str, Any]:
     model.train()
-    running_loss = 0.0
+    running_loss: Tensor = torch.zeros(size=(), device=device)
     n_batches = 0
     pbar = tqdm(loader, desc=f"Epoch {epoch:3d} train", unit="batch", leave=False)
     for x, y in pbar:
-        x = x.to(
-            device,
-            non_blocking=True,
-            dtype=torch.float16,
-            memory_format=torch.channels_last,
-        ).div_(255.0)
-        y = y.to(device, non_blocking=True, dtype=torch.float32)
+        x: Tensor = x.to(device, non_blocking=True)
+        y: Tensor = y.to(device, non_blocking=True, dtype=torch.float32)
         optimizer.zero_grad(set_to_none=True)
 
-        with autocast("cuda"):
-            logits = model(x)
-            loss = criterion(logits, y)
+        with autocast(device_type="cuda"):
+            loss: Tensor = train_step(x, y)
 
-        scaler.scale(loss).backward()
+        scaler.scale(outputs=loss).backward()
         scaler.step(optimizer)
         scaler.update()
 
-        loss_val = loss.item()
-        running_loss += loss_val
+        running_loss += loss.detach()
         n_batches += 1
-        if n_batches % 50 == 0:
-            pbar.set_postfix(loss=f"{loss_val:.4f}")
+        if n_batches % 200 == 0:
+            pbar.set_postfix(loss=f"{loss.detach():.4f}")
         if profiler is not None:
             profiler.step()
 
     return {"loss": running_loss / n_batches}
 
 
+def make_train_step(model: nn.Module, criterion):
+    def train_step(x_raw, y):
+        x: Tensor = (
+            x_raw.to(dtype=torch.float16)
+            .div(255.0)
+            .to(memory_format=torch.channels_last)
+        )
+        logits: Tensor = model(x)
+        loss: Tensor = criterion(logits, y)
+        return loss
+
+    return train_step
+
+
 @torch.no_grad()
 def eval_epoch(
     model: nn.Module,
-    loader: torch.utils.data.DataLoader[tuple[torch.Tensor, torch.Tensor]],
+    loader: DataLoader[tuple[torch.Tensor, torch.Tensor]],
     criterion: Any,
     device: torch.device,
     key_names: list[str],
@@ -284,16 +298,16 @@ def eval_epoch(
     running_loss = 0.0
     pbar = tqdm(loader, desc=f"Epoch {epoch:3d} val  ", unit="batch", leave=False)
     for x, y in pbar:
-        x = (
+        x: Tensor = (
             x.to(device, non_blocking=True)
             .to(dtype=torch.float16)
             .div_(255.0)
             .to(memory_format=torch.channels_last)
         )
-        y = y.to(device, non_blocking=True, dtype=torch.float32)
-        with autocast("cuda"):
-            logits = model(x)
-            loss = criterion(logits, y)
+        y: Tensor = y.to(device, non_blocking=True, dtype=torch.float32)
+        with autocast(device_type="cuda"):
+            logits: Tensor = model(x)
+            loss: Tensor = criterion(logits, y)
 
         running_loss += loss.item()
         m = compute_metrics(logits, y, key_names, thresholds=thresholds)
@@ -405,7 +419,7 @@ def plot_per_key_metrics(
 
 @torch.no_grad()
 def find_worst_predictions_per_key(
-    test_dataset: torch.utils.data.Dataset[tuple[torch.Tensor, torch.Tensor]],
+    test_dataset: Dataset[tuple[torch.Tensor, torch.Tensor]],
     model: nn.Module,
     device: torch.device,
     key_names: list[str],
@@ -418,7 +432,7 @@ def find_worst_predictions_per_key(
         [] for _ in range(num_keys)
     ]
 
-    loader = torch.utils.data.DataLoader(
+    loader: DataLoader[tuple[Tensor, Tensor]] = DataLoader(
         test_dataset,
         batch_size=WORST_PRED_BATCH_SIZE,
         shuffle=False,
@@ -438,7 +452,7 @@ def find_worst_predictions_per_key(
             logits = model(x_batch)
             probs = torch.sigmoid(logits)
 
-        eps = METRICS_EPS
+        eps = EPSILON
         y_np = y_batch.numpy()
         p_np = np.clip(probs.cpu().numpy(), eps, 1.0 - eps)
         bce = -(y_np * np.log(p_np + eps) + (1 - y_np) * np.log(1 - p_np + eps))
@@ -541,8 +555,8 @@ def plot_worst_predictions_for_key(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train inverse dynamics model")
-    parser.add_argument("--epochs", type=int, default=DEFAULT_EPOCHS)
-    parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
+    parser.add_argument("--epochs", type=int, default=EPOCHS)
+    parser.add_argument("--seed", type=int, default=SEED)
     parser.add_argument(
         "--profile",
         action="store_true",
@@ -555,17 +569,8 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    from datetime import datetime
-
-    batch_size = DEFAULT_BATCH_SIZE
-    lr = DEFAULT_LR
-    min_lr = DEFAULT_MIN_LR
-    dropout = DEFAULT_DROPOUT
-    patience = DEFAULT_PATIENCE
-    plateau_epochs = DEFAULT_PLATEAU_EPOCHS
-    num_workers = DEFAULT_NUM_WORKERS
     cosine_t_max = max(args.epochs // COSINE_T_MAX_DIVISOR, 1)
-    min_lr_ratio = min_lr / lr
+    min_lr_ratio = MIN_LR / LR
 
     out_dir = (
         INVERSE_DYNAMIC_RUNS_DIR
@@ -573,7 +578,6 @@ def main() -> None:
     )
 
     set_seed(args.seed)
-    torch.set_float32_matmul_precision("high")
 
     info_path = PROCESSED_DATA_DIR / "dataset_info.json"
     if not info_path.exists():
@@ -584,67 +588,65 @@ def main() -> None:
         ds_info = json.load(f)
     key_names: list[str] = ds_info["key_names"]
     num_keys = len(key_names)
-    print(f"Key order ({num_keys} keys): {key_names}")
-
     pos_weight = torch.as_tensor(ds_info["pos_weight"], dtype=torch.float32)
-    print(
-        f"Pos weights: {dict(zip(key_names, [f'{w:.1f}' for w in pos_weight.tolist()], strict=True))}"
-    )
 
-    train_ds = ChunkedDataset(PROCESSED_DATA_DIR / "train")
-    val_ds = ChunkedDataset(PROCESSED_DATA_DIR / "val")
-    test_ds = ChunkedDataset(PROCESSED_DATA_DIR / "test")
+    train_ds = ChunkedDataset(chunk_dir=PROCESSED_DATA_DIR / "train")
+    val_ds = ChunkedDataset(chunk_dir=PROCESSED_DATA_DIR / "val")
+    test_ds = ChunkedDataset(chunk_dir=PROCESSED_DATA_DIR / "test")
     print(f"Split: train={len(train_ds):,}  val={len(val_ds):,}  test={len(test_ds):,}")
 
     device = get_device()
     print(f"Device: {device}")
 
-    train_loader = build_loader(
-        train_ds, batch_size, shuffle=True, num_workers=num_workers
+    train_loader: DataLoader[tuple[Tensor, Tensor]] = build_loader(
+        train_ds, BATCH_SIZE, shuffle=True, num_workers=NUM_WORKERS
     )
-    val_loader = build_loader(
+    val_loader: DataLoader[tuple[Tensor, Tensor]] = build_loader(
         val_ds,
-        batch_size * VAL_BATCH_MULTIPLIER,
+        BATCH_SIZE * VAL_BATCH_MULTIPLIER,
         shuffle=False,
-        num_workers=num_workers,
+        num_workers=NUM_WORKERS,
     )
-    test_loader = build_loader(
+    test_loader: DataLoader[tuple[Tensor, Tensor]] = build_loader(
         test_ds,
-        batch_size * VAL_BATCH_MULTIPLIER,
+        BATCH_SIZE * VAL_BATCH_MULTIPLIER,
         shuffle=False,
-        num_workers=num_workers,
+        num_workers=NUM_WORKERS,
     )
 
-    model = InverseDynamicsResNet(num_keys=num_keys, dropout=dropout)
-    model = model.to(device, memory_format=torch.channels_last)  # type: ignore[call-overload]
+    criterion: partial[Tensor] = partial(
+        focal_loss_with_logits, pos_weight=pos_weight.to(device)
+    )
+    model = InverseDynamicsResNet(num_keys=num_keys, dropout=DROPOUT)
+    model = model.to(device, memory_format=torch.channels_last)  # type: ignore
+    train_step = make_train_step(model, criterion)
     try:
-        model = torch.compile(model)  # type: ignore[assignment]
+        train_step = torch.compile(train_step, mode="reduce-overhead")
         print("  torch.compile: enabled")
     except Exception as e:
         print(f"  torch.compile: failed ({e}), running uncompiled")
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Model params: {n_params:,}")
 
-    criterion = partial(focal_loss_with_logits, pos_weight=pos_weight.to(device))
     optimizer = torch.optim.AdamW(
         model.parameters(),
-        lr=lr,
+        lr=LR,
         weight_decay=ADAMW_WEIGHT_DECAY,
         fused=ADAMW_FUSED,
     )
 
     def lr_lambda(epoch: int) -> float:
-        if epoch < plateau_epochs:
+        if epoch < PLATEAU_EPOCHS:
             return 1.0
-        if epoch < plateau_epochs + cosine_t_max:
-            progress = (epoch - plateau_epochs) / max(cosine_t_max, 1)
+        if epoch < PLATEAU_EPOCHS + cosine_t_max:
+            progress: int | float = (epoch - PLATEAU_EPOCHS) / max(cosine_t_max, 1)
             return min_lr_ratio + (1.0 - min_lr_ratio) * (
                 0.5 * (1.0 + math.cos(math.pi * progress))
             )
         return min_lr_ratio
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
-    scaler = GradScaler("cuda")
+    scaler = GradScaler(device="cuda")
 
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -675,9 +677,7 @@ def main() -> None:
     best_epoch = 0
     patience_counter = 0
 
-    print(f"\nTraining for up to {args.epochs} epochs (patience={patience})...")
-
-    model.train()
+    print(f"\nTraining for up to {args.epochs} epochs (patience={PATIENCE})...")
 
     print(
         f"\n{'Epoch':>5s} {'TrainLoss':>10s} {'ValLoss':>10s} {'ValF1':>8s} {'ValAcc':>8s} {'NoActAcc':>8s} {'LR':>10s}"
@@ -686,25 +686,28 @@ def main() -> None:
 
     for epoch in range(1, args.epochs + 1):
         with prof_ctx:
-            train_metrics = train_epoch(
+            train_metrics: dict[str, Any] = train_epoch(
                 model,
                 train_loader,
-                criterion,
+                train_step,
                 optimizer,
                 scaler,
                 device,
-                key_names,
                 epoch,
                 profiler=prof,
             )
         if prof is not None:
             prof.stop()
-            trace_path = out_dir / "train_trace.json"
-            prof.export_chrome_trace(str(trace_path))
-            print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=30))
+            trace_path: Path = out_dir / "train_trace.json"
+            table_path: Path = out_dir / "averages_table.txt"
+            prof.export_chrome_trace(path=str(object=trace_path))
+            with open(file=table_path, mode="w+") as f:
+                f.write(prof.key_averages().table(sort_by="cuda_time_total"))
+
             print(f"Profiler trace saved to {trace_path}")
             prof_ctx = nullcontext()
             prof = None
+            return
         val_metrics = eval_epoch(model, val_loader, criterion, device, key_names, epoch)
         scheduler.step()
         current_lr = scheduler.get_last_lr()[0]
@@ -753,9 +756,9 @@ def main() -> None:
                 out_dir / f"checkpoint_epoch{epoch:03d}.pt",
             )
 
-        if patience_counter >= patience:
+        if patience_counter >= PATIENCE:
             print(
-                f"\nEarly stopping at epoch {epoch} (no improvement for {patience} epochs)"
+                f"\nEarly stopping at epoch {epoch} (no improvement for {PATIENCE} epochs)"
             )
             break
 
@@ -797,7 +800,7 @@ def main() -> None:
 
     print("\nGenerating worst-prediction visualizations per key...")
     worst_preds_per_key = find_worst_predictions_per_key(
-        test_ds, model, device, key_names, top_k=DEFAULT_TOP_K
+        test_ds, model, device, key_names, top_k=TOP_K
     )
     for key_name in key_names:
         items = worst_preds_per_key.get(key_name, [])
@@ -827,13 +830,13 @@ def main() -> None:
         "history": {k: v[-1] for k, v in history.items() if k.startswith("val_")},
         "config": {
             "loss": "focal",
-            "batch_size": batch_size,
+            "batch_size": BATCH_SIZE,
             "epochs": epoch,
-            "lr": lr,
-            "min_lr": min_lr,
-            "dropout": dropout,
-            "patience": patience,
-            "plateau_epochs": plateau_epochs,
+            "lr": LR,
+            "min_lr": MIN_LR,
+            "dropout": DROPOUT,
+            "patience": PATIENCE,
+            "plateau_epochs": PLATEAU_EPOCHS,
             "cosine_t_max": cosine_t_max,
             "model_params": n_params,
             "train_windows": len(train_ds),
