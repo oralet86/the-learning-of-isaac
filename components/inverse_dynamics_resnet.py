@@ -1,5 +1,7 @@
 """Inverse dynamics ResNet model."""
 
+from typing import override
+
 import torch
 import torch.nn as nn
 
@@ -13,7 +15,7 @@ ADAMW_WEIGHT_DECAY = 5e-3
 
 
 class ResidualBlock(nn.Module):
-    def __init__(self, in_channels: int, out_channels: int, stride: int = 1):
+    def __init__(self, in_channels: int, out_channels: int, stride: int = 1) -> None:
         super().__init__()
         self.conv1 = nn.Conv2d(
             in_channels,
@@ -37,6 +39,7 @@ class ResidualBlock(nn.Module):
         self.relu = nn.ReLU(inplace=True)
         self.dropout = nn.Dropout2d(RESIDUAL_DROPOUT)
 
+    @override
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         identity = self.downsample(x)
         out = self.relu(self.bn1(self.conv1(x)))
@@ -52,7 +55,7 @@ class InverseDynamicsResNet(nn.Module):
         in_channels: int = INPUT_CHANNELS,
         num_keys: int = 13,
         dropout: float = 0.3,
-    ):
+    ) -> None:
         super().__init__()
         self.conv1 = nn.Conv2d(in_channels, 16, 7, stride=2, padding=3, bias=False)
         self.bn1 = nn.BatchNorm2d(16)
@@ -85,6 +88,7 @@ class InverseDynamicsResNet(nn.Module):
                 nn.init.normal_(m.weight, 0, 0.01)
                 nn.init.constant_(m.bias, 0)
 
+    @override
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.relu(self.bn1(self.conv1(x)))
         x = self.maxpool(x)

@@ -2,6 +2,7 @@
 
 from bisect import bisect_right
 from pathlib import Path  # noqa: TC003
+from typing import override
 
 import numpy as np
 import torch
@@ -23,7 +24,7 @@ class ChunkedDataset(Dataset[tuple[Tensor, Tensor]]):
     Sequential access (DataLoader default) means each chunk is loaded once.
     """
 
-    def __init__(self, chunk_dir: Path):
+    def __init__(self, chunk_dir: Path) -> None:
         self.chunk_dir = chunk_dir
         self.X_paths = sorted(chunk_dir.glob("chunk_*_X.npy"))
         if not self.X_paths:
@@ -50,26 +51,29 @@ class ChunkedDataset(Dataset[tuple[Tensor, Tensor]]):
     def __len__(self) -> int:
         return self.cumulative_sizes[-1] if self.cumulative_sizes else 0
 
-    def __getitem__(self, idx: int) -> tuple[Tensor, Tensor]:
-        if idx < 0:
-            idx += len(self)
-        if idx < 0 or idx >= len(self):
+    @override
+    def __getitem__(self, index: int) -> tuple[Tensor, Tensor]:
+        if index < 0:
+            index += len(self)
+        if index < 0 or index >= len(self):
             raise IndexError(
-                f"Index {idx} out of range for dataset of size {len(self)}"
+                f"Index {index} out of range for dataset of size {len(self)}"
             )
 
-        chunk_idx = bisect_right(self.cumulative_sizes, idx)
-        local_idx = idx - (self.cumulative_sizes[chunk_idx - 1] if chunk_idx > 0 else 0)
+        chunk_idx = bisect_right(self.cumulative_sizes, index)
+        local_idx = index - (
+            self.cumulative_sizes[chunk_idx - 1] if chunk_idx > 0 else 0
+        )
 
         if self._cache is None or self._cache[0] != chunk_idx:
             x_path = self.X_paths[chunk_idx]
             y_path = x_path.parent / x_path.name.replace("_X.npy", "_y.npy")
-            X_chunk = np.load(x_path, mmap_mode="r")
+            x_chunk = np.load(x_path, mmap_mode="r")
             y_chunk = np.load(y_path, mmap_mode="r")
-            self._cache = (chunk_idx, X_chunk, y_chunk)
+            self._cache = (chunk_idx, x_chunk, y_chunk)
 
-        _, X_chunk, y_chunk = self._cache
-        x = torch.from_numpy(X_chunk[local_idx].copy())
+        _, x_chunk, y_chunk = self._cache
+        x = torch.from_numpy(x_chunk[local_idx].copy())
         y = torch.from_numpy(y_chunk[local_idx].copy())
         return x, y
 
@@ -80,6 +84,7 @@ def build_loader(
     shuffle: bool,
     num_workers: int = NUM_WORKERS,
     pin_memory: bool = True,
+    drop_last: bool = True,
 ) -> DataLoader[tuple[Tensor, Tensor]]:
     return DataLoader(
         dataset,
@@ -87,7 +92,7 @@ def build_loader(
         shuffle=shuffle,
         num_workers=num_workers,
         pin_memory=pin_memory,
-        drop_last=True,
+        drop_last=drop_last,
         persistent_workers=num_workers > 0,
         prefetch_factor=(2 if num_workers > 0 else None),
     )

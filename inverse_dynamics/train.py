@@ -3,6 +3,7 @@
 
 import argparse
 from collections import defaultdict
+from collections.abc import Callable  # noqa: TC003
 from contextlib import nullcontext
 from datetime import datetime
 from functools import partial
@@ -200,6 +201,8 @@ def find_optimal_thresholds(
 
         all_logits.append(logits.cpu())
         all_targets.append(y)
+    if not all_logits:
+        return dict.fromkeys(key_names, THRESHOLD), dict.fromkeys(key_names, 0.0)
     logits_cat: Tensor = torch.cat(all_logits)
     targets_cat: Tensor = torch.cat(all_targets)
     probs: Tensor = torch.sigmoid(logits_cat)
@@ -236,12 +239,12 @@ def find_optimal_thresholds(
 def train_epoch(
     model: nn.Module,
     loader: DataLoader[tuple[torch.Tensor, torch.Tensor]],
-    train_step: Any,
+    train_step: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
     optimizer: torch.optim.Optimizer,
     scaler: GradScaler,
     device: torch.device,
     epoch: int,
-    profiler: Any = None,
+    profiler: torch.profiler.profile | None = None,
 ) -> dict[str, Any]:
     model.train()
     running_loss: Tensor = torch.zeros(size=(), device=device)
@@ -266,11 +269,15 @@ def train_epoch(
         if profiler is not None:
             profiler.step()
 
+    if n_batches == 0:
+        return {"loss": torch.tensor(float("nan"))}
     return {"loss": running_loss / n_batches}
 
 
-def make_train_step(model: nn.Module, criterion):
-    def train_step(x_raw, y):
+def make_train_step(
+    model: nn.Module, criterion: Callable[[torch.Tensor, torch.Tensor], torch.Tensor]
+) -> Callable[[torch.Tensor, torch.Tensor], torch.Tensor]:
+    def train_step(x_raw: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         x: Tensor = (
             x_raw.to(dtype=torch.float16)
             .div(255.0)
@@ -287,13 +294,23 @@ def make_train_step(model: nn.Module, criterion):
 def eval_epoch(
     model: nn.Module,
     loader: DataLoader[tuple[torch.Tensor, torch.Tensor]],
-    criterion: Any,
+    criterion: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
     device: torch.device,
     key_names: list[str],
     epoch: int,
     thresholds: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     model.eval()
+    if len(loader) == 0:
+        empty: dict[str, Any] = {"loss": float("nan")}
+        for name in key_names:
+            empty[f"{name}_f1"] = float("nan")
+            empty[f"{name}_acc"] = float("nan")
+            empty[f"{name}_noact_acc"] = float("nan")
+        empty["mean_f1"] = float("nan")
+        empty["mean_acc"] = float("nan")
+        empty["mean_noact_acc"] = float("nan")
+        return empty
     metrics_list = []
     running_loss = 0.0
     pbar = tqdm(loader, desc=f"Epoch {epoch:3d} val  ", unit="batch", leave=False)
@@ -605,12 +622,14 @@ def main() -> None:
         BATCH_SIZE * VAL_BATCH_MULTIPLIER,
         shuffle=False,
         num_workers=NUM_WORKERS,
+        drop_last=False,
     )
     test_loader: DataLoader[tuple[Tensor, Tensor]] = build_loader(
         test_ds,
         BATCH_SIZE * VAL_BATCH_MULTIPLIER,
         shuffle=False,
         num_workers=NUM_WORKERS,
+        drop_last=False,
     )
 
     criterion: partial[Tensor] = partial(
@@ -707,9 +726,9 @@ def main() -> None:
             prof_ctx = nullcontext()
             prof = None
             return
-        val_metrics = eval_epoch(model, val_loader, criterion, device, key_names, epoch)
         scheduler.step()
         current_lr = scheduler.get_last_lr()[0]
+        val_metrics = eval_epoch(model, val_loader, criterion, device, key_names, epoch)
 
         history["train_loss"].append(train_metrics["loss"].item())
         history["train_macro_f1"].append(val_metrics["macro_f1"])  # val as proxy
