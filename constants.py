@@ -2,14 +2,45 @@ from pathlib import Path
 
 SEED = 42
 
-# Codec options
-TARGET_WIDTH = 284
-TARGET_HEIGHT = 160
+# Target resolution for training data. Video is resized to this during
+# preprocessing. 640x360 (360p) preserves the 16:9 aspect ratio.
+TARGET_WIDTH = 640
+TARGET_HEIGHT = 360
 TARGET_SIZE: tuple[int, int] = (TARGET_WIDTH, TARGET_HEIGHT)
 FPS = 20
-FRAME_SKIP = 3
+
+# Subsampling step from master recording fps to training fps.
+# Master is recorded at 60 fps; every 3rd frame gives ~20 fps.
+SUBSAMPLE_STEP = 3
+
+# Duration threshold for AFK detection (idle frames removed).
+AFK_DURATION_SECONDS = 4.0
+
+# Tolerance for detecting pixel-identical consecutive frames within a window.
+# Windows where all consecutive frame pairs match below this threshold are
+# discarded (they carry no motion signal).
+STATIC_WINDOW_TOLERANCE = 0.0
+
 CODEC = "av1_nvenc"
 CQ = "32"
+
+# Master recording options (used by record.py). The master is a high-quality
+# 720p60 backup from which all training-rate subsets are derived later.
+MASTER_WIDTH = 1280
+MASTER_HEIGHT = 720
+MASTER_FPS = 60
+MASTER_CODEC = "av1_nvenc"
+MASTER_CQ = "20"
+MASTER_FALLBACK_CODEC = "hevc_nvenc"
+MASTER_FALLBACK_CQ = "23"
+MASTER_PRESET = "p5"
+
+# Sync self-check thresholds (ms). Driving the desync detection logic in
+# record.py and reported in drift_report.txt.
+SYNC_DELTA_INTERNAL_MAX_MS = 1.0
+SYNC_DELTA_PIPELINE_STD_MAX_MS = 5.0
+SYNC_DELTA_PIPELINE_SPAN_MAX_MS = 20.0
+SYNC_DROPPED_FRAME_GAP_MS = 25.0
 
 # Directories
 DATA_DIR = Path("data")
@@ -41,7 +72,6 @@ KEY_ORDER = [
 INPUT_CHANNELS = 2
 VAL_FRAC = 0.10
 TEST_FRAC = 0.10
-MAX_SAME_FRAMES = 60
 TRIM_EDGE_FRAC = 0.01
 DUPE_EPSILON = 1.0
 CHUNK_SIZE = 10000
