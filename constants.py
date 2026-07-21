@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Literal
 
 SEED = 42
 
@@ -85,3 +86,9 @@ RUN_TIMESTAMP_FORMAT = "%Y%m%d_%H%M"
 PROFILE_WAIT = 5
 PROFILE_WARMUP = 5
 PROFILE_STEPS = 100
+
+# Run modes
+
+Mode = Literal["default", "profile", "profile_detailed", "ablation"]
+DEFAULT_MODE: Mode = "default"
+ABLATION_DATA_FRAC = 0.10

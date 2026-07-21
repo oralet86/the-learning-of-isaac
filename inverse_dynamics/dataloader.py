@@ -16,7 +16,7 @@ import torch
 from torch import Tensor
 from torch.utils.data import DataLoader, Dataset
 
-from constants import NUM_WORKERS
+from constants import NUM_WORKERS, SEED
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -54,6 +54,7 @@ class WindowedDataset(Dataset[tuple[Tensor, Tensor]]):
         window_size: int,
         label_index: int,
         stride: int = 1,
+        data_frac: float = 1.0,
     ) -> None:
         if split not in _SPLIT_MAP:
             raise ValueError(
@@ -65,6 +66,7 @@ class WindowedDataset(Dataset[tuple[Tensor, Tensor]]):
         self.window_size = window_size
         self.label_index = label_index
         self.stride = stride
+        self.data_frac = data_frac
 
         self._frame_paths: list[Path] = []
         self._label_paths: list[Path] = []
@@ -129,6 +131,12 @@ class WindowedDataset(Dataset[tuple[Tensor, Tensor]]):
                 label_pos = frame_start + self.label_index * self.stride
                 if split_mask[label_pos] == self.split_value:
                     self._samples.append((run_idx, frame_start))
+
+        if self.data_frac < 1.0 and self._samples:
+            rng = np.random.default_rng(SEED)
+            n_keep = max(1, int(len(self._samples) * self.data_frac))
+            idx = rng.choice(len(self._samples), size=n_keep, replace=False)
+            self._samples = [self._samples[i] for i in sorted(idx)]
 
     # ------------------------------------------------------------------
     # File I/O helpers

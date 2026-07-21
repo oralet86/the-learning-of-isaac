@@ -24,6 +24,8 @@ from components import (
     InverseDynamicsModel,
 )
 from constants import (
+    ABLATION_DATA_FRAC,
+    DEFAULT_MODE,
     EPOCHS,
     INVERSE_DYNAMIC_RUNS_DIR,
     LR,
@@ -229,14 +231,11 @@ def main() -> None:
     parser.add_argument("--epochs", type=int, default=EPOCHS)
     parser.add_argument("--seed", type=int, default=SEED)
     parser.add_argument(
-        "--profile",
-        action="store_true",
-        help="Profile the first epoch of training and dump a Chrome trace.",
-    )
-    parser.add_argument(
-        "--profile-detailed",
-        action="store_true",
-        help="Like --profile, but also record memory and input shapes.",
+        "--mode",
+        type=str,
+        default=DEFAULT_MODE,
+        choices=["default", "profile", "profile_detailed", "ablation"],
+        help=f"Run mode: default, profile, profile_detailed, or ablation (default: {DEFAULT_MODE})",
     )
     parser.add_argument(
         "--model",
@@ -300,12 +299,15 @@ def main() -> None:
     num_keys = len(key_names)
     pos_weight = torch.as_tensor(ds_info["pos_weight"], dtype=torch.float32)
 
+    data_frac = ABLATION_DATA_FRAC if args.mode == "ablation" else 1.0
+
     train_ds = WindowedDataset(
         processed_dir=PROCESSED_DATA_DIR,
         split="train",
         window_size=window_size,
         label_index=label_index,
         stride=stride,
+        data_frac=data_frac,
     )
     val_ds = WindowedDataset(
         processed_dir=PROCESSED_DATA_DIR,
@@ -401,8 +403,8 @@ def main() -> None:
 
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    if args.profile or args.profile_detailed:
-        detailed = args.profile_detailed
+    if args.mode in ("profile", "profile_detailed"):
+        detailed = args.mode == "profile_detailed"
         prof = torch.profiler.profile(
             activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
             schedule=torch.profiler.schedule(
@@ -574,6 +576,7 @@ def main() -> None:
         "config": {
             "loss": "bce",
             "model": args.model,
+            "mode": args.mode,
             "batch_size": model_config.batch_size,
             "epochs": len(history["train_loss"]),
             "lr": LR,
