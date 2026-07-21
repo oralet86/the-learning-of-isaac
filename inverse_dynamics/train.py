@@ -43,7 +43,6 @@ from constants import (
 from inverse_dynamics.dataloader import (
     WindowedDataset,
     build_loader,
-    signed_diff_collate,
 )
 from inverse_dynamics.plotting import (
     find_worst_predictions_per_key,
@@ -262,11 +261,6 @@ def main() -> None:
         default=None,
         help="Override model stride",
     )
-    parser.add_argument(
-        "--signed-diff",
-        action="store_true",
-        help="Use signed-diff collate function (replaces frame_t with frame_t - frame_{t-1})",
-    )
     args = parser.parse_args()
 
     model_cls = InverseDynamicsModel.get(args.model)
@@ -300,6 +294,7 @@ def main() -> None:
     pos_weight = torch.as_tensor(ds_info["pos_weight"], dtype=torch.float32)
 
     data_frac = ABLATION_DATA_FRAC if args.mode == "ablation" else 1.0
+    effective_lr = LR * data_frac
 
     train_ds = WindowedDataset(
         processed_dir=PROCESSED_DATA_DIR,
@@ -336,15 +331,12 @@ def main() -> None:
     else:
         model = model.to(device)  # type: ignore
 
-    collate_fn = signed_diff_collate if args.signed_diff else None
-
     train_loader: DataLoader[tuple[Tensor, Tensor]] = build_loader(
         train_ds,
         model_config.batch_size,
         shuffle=True,
         num_workers=NUM_WORKERS,
         drop_last=True,
-        collate_fn=collate_fn,
     )
     val_loader: DataLoader[tuple[Tensor, Tensor]] = build_loader(
         val_ds,
@@ -352,7 +344,6 @@ def main() -> None:
         shuffle=False,
         num_workers=NUM_WORKERS,
         drop_last=False,
-        collate_fn=collate_fn,
     )
     test_loader: DataLoader[tuple[Tensor, Tensor]] = build_loader(
         test_ds,
@@ -360,19 +351,18 @@ def main() -> None:
         shuffle=False,
         num_workers=NUM_WORKERS,
         drop_last=False,
-        collate_fn=collate_fn,
     )
 
     criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight.to(device))
     train_step = make_train_step(model, criterion, model_config.uses_channels_last)
     try:
-        train_step = torch.compile(train_step)
+        train_step = torch.compile(train_step, mode="max-autotune")
         print("  torch.compile: enabled")
     except Exception as e:
         print(f"  torch.compile: failed ({e}), running uncompiled")
     eval_step = make_eval_step(model, criterion, model_config.uses_channels_last)
     try:
-        eval_step = torch.compile(eval_step, dynamic=False)
+        eval_step = torch.compile(eval_step, dynamic=False, mode="max-autotune")
         print("  eval torch.compile: enabled")
     except Exception as e:
         print(f"  eval torch.compile: failed ({e}), running uncompiled")
@@ -391,7 +381,7 @@ def main() -> None:
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
-        lr=LR,
+        lr=effective_lr,
         weight_decay=model_config.weight_decay,
         fused=True,
     )
@@ -579,7 +569,7 @@ def main() -> None:
             "mode": args.mode,
             "batch_size": model_config.batch_size,
             "epochs": len(history["train_loss"]),
-            "lr": LR,
+            "lr": effective_lr,
             "dropout": model_config.dropout,
             "weight_decay": model_config.weight_decay,
             "patience": PATIENCE,

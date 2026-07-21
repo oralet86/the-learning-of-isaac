@@ -228,31 +228,3 @@ def build_loader(
         persistent_workers=num_workers > 0,
         prefetch_factor=(2 if num_workers > 0 else None),
     )
-
-
-def signed_diff_collate(
-    batch: list[tuple[Tensor, Tensor]],
-) -> tuple[Tensor, Tensor]:
-    """Vectorized collate function that encodes motion via signed frame differences.
-
-    Frame 0 is kept as raw grayscale.  All subsequent frames are replaced by
-    the signed difference from the previous frame, centred at 128:
-
-        diff = 128 + frame_t - frame_{t-1}
-
-    Values > 128 mean the pixel got brighter; < 128 means darker.
-    This representation makes motion direction and magnitude explicit for
-    the model while keeping pixel values in [0, 255].
-    """
-    frames_list, labels_list = zip(*batch, strict=False)
-    frames = torch.stack(frames_list)  # (B, T, H, W)
-    labels = torch.stack(labels_list)
-
-    if frames.size(1) <= 1:
-        return frames, labels
-
-    result = frames.clone()
-    diffs = frames[:, 1:].to(torch.int16) - frames[:, :-1].to(torch.int16)
-    result[:, 1:] = torch.clamp(128 + diffs, 0, 255).to(torch.uint8)
-
-    return result, labels

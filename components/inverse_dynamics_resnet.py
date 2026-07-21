@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 
 from components.inverse_dynamics_model import InverseDynamicsModel, ModelConfig
+from components.signed_diff import SignedDiff
 
 _RESIDUAL_DROPOUT = 0.2
 _DROPOUT = 0.4
@@ -57,6 +58,7 @@ class InverseDynamicsResNet(InverseDynamicsModel, nn.Module, model_name="resnet"
         dropout: float = _DROPOUT,
     ) -> None:
         super().__init__()
+        self.signed_diff = SignedDiff()
         self.conv1 = nn.Conv2d(window_size, 16, 7, stride=2, padding=3, bias=False)
         self.bn1 = nn.BatchNorm2d(16)
         self.maxpool = nn.MaxPool2d(3, stride=2, padding=1)
@@ -90,6 +92,7 @@ class InverseDynamicsResNet(InverseDynamicsModel, nn.Module, model_name="resnet"
 
     @override
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.signed_diff(x)
         x = self.relu(self.bn1(self.conv1(x)))
         x = self.maxpool(x)
         x = self.layer1_block0(x)

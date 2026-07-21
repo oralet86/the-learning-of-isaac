@@ -7,6 +7,7 @@ import torch.nn as nn
 
 from components.inverse_dynamics_model import InverseDynamicsModel, ModelConfig
 from components.inverse_dynamics_resnet import ResidualBlock
+from components.signed_diff import SignedDiff
 
 _BATCH_SIZE = 128
 _VAL_BATCH_MULTIPLIER = 2
@@ -43,6 +44,7 @@ class InverseDynamicsTransformer(
         super().__init__()
         self.window_size = window_size
 
+        self.signed_diff = SignedDiff()
         self.conv1 = nn.Conv2d(1, 32, 7, stride=2, padding=3, bias=False)
         self.bn1 = nn.BatchNorm2d(32)
         self.maxpool = nn.MaxPool2d(3, stride=2, padding=1)
@@ -96,6 +98,7 @@ class InverseDynamicsTransformer(
 
     @override
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.signed_diff(x)
         b, t, _h, _w = x.shape
 
         x = x.reshape(b * t, 1, _h, _w)
