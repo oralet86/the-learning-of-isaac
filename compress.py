@@ -10,14 +10,13 @@ from constants import (
     COMPRESSED_DIR,
     CQ,
     DOWNLOAD_DIR,
-    FPS,
     TARGET_HEIGHT,
     TARGET_WIDTH,
 )
 
 VIDEO_EXTENSIONS = {".mp4", ".webm", ".mkv", ".flv", ".avi", ".mov", ".3gp"}
 
-VIDEO_FILTERS = f"fps={FPS},scale={TARGET_WIDTH}:{TARGET_HEIGHT},format=gray,mpdecimate=hi=225:lo=15:frac=0.25,setpts=N/FRAME_RATE/TB"
+VIDEO_FILTERS = f"scale={TARGET_WIDTH}:{TARGET_HEIGHT},format=gray,mpdecimate=hi=225:lo=15:frac=0.25,setpts=N/FRAME_RATE/TB"
 
 
 def find_videos(root: Path) -> list[Path]:

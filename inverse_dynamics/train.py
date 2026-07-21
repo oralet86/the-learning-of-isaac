@@ -6,9 +6,7 @@ from collections import defaultdict
 from collections.abc import Callable  # noqa: TC003
 from contextlib import nullcontext
 from datetime import datetime
-from functools import partial
 import json
-import math
 from pathlib import Path  # noqa: TC003
 import sys
 from typing import TYPE_CHECKING, Any
@@ -19,31 +17,25 @@ import torch
 from torch.amp import GradScaler, autocast
 import torch.nn as nn
 from torch.profiler import ProfilerActivity
+from torchmetrics import MetricCollection
+from torchmetrics.classification import MultilabelAccuracy, MultilabelF1Score
 from tqdm import tqdm
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
 
-from components import InverseDynamicsResNet, focal_loss_with_logits
-from components.inverse_dynamics_resnet import (
-    ADAMW_WEIGHT_DECAY,
-    BATCH_SIZE,
-    DROPOUT,
-    VAL_BATCH_MULTIPLIER,
+from components import (
+    InverseDynamicsModel,
 )
 from constants import (
-    ADAMW_FUSED,
-    CHECKPOINT_FREQ,
-    COSINE_T_MAX_DIVISOR,
     EPOCHS,
     EPSILON,
     INVERSE_DYNAMIC_RUNS_DIR,
     LR,
-    MIN_LR,
     NUM_WORKERS,
     PATIENCE,
-    PLATEAU_EPOCHS,
+    PLATEAU_PATIENCE,
     PROCESSED_DATA_DIR,
     PROFILE_STEPS,
     PROFILE_WAIT,
@@ -51,11 +43,14 @@ from constants import (
     RUN_TIMESTAMP_FORMAT,
     SEED,
     THRESHOLD,
-    THRESHOLD_CANDIDATES,
-    TOP_K,
+    TOP_K_WORST_PREDS,
     WORST_PRED_BATCH_SIZE,
 )
-from inverse_dynamics.dataloader import ChunkedDataset, build_loader
+from inverse_dynamics.dataloader import (
+    WindowedDataset,
+    build_loader,
+    signed_diff_collate,
+)
 
 torch.set_float32_matmul_precision(precision="high")
 torch.backends.cudnn.benchmark = True
@@ -79,161 +74,8 @@ def get_device() -> torch.device:
 
 
 # ---------------------------------------------------------------------------
-# Metrics
-# ---------------------------------------------------------------------------
-
-
-@torch.no_grad()
-def compute_metrics(
-    logits: torch.Tensor,
-    targets: torch.Tensor,
-    key_names: list[str],
-    thresholds: dict[str, float] | None = None,
-) -> dict[str, Any]:
-    probs = torch.sigmoid(logits)
-    if thresholds is None:
-        preds = (probs > THRESHOLD).float()
-    else:
-        threshold_tensor = torch.tensor(
-            [thresholds[k] for k in key_names], device=probs.device, dtype=probs.dtype
-        )
-        preds = (probs > threshold_tensor.unsqueeze(0)).float()
-
-    correct = (preds == targets).float()
-    per_key_acc = correct.mean(dim=0).cpu().numpy()
-
-    tp = (preds * targets).sum(dim=0).float()
-    fp = (preds * (1 - targets)).sum(dim=0).float()
-    fn = ((1 - preds) * targets).sum(dim=0).float()
-
-    eps = EPSILON
-    per_key_precision = tp / (tp + fp + eps)
-    per_key_recall = tp / (tp + fn + eps)
-    per_key_f1 = (
-        2
-        * per_key_precision
-        * per_key_recall
-        / (per_key_precision + per_key_recall + eps)
-    )
-
-    macro_f1 = per_key_f1.mean().item()
-    micro_tp = tp.sum()
-    micro_fp = fp.sum()
-    micro_fn = fn.sum()
-    micro_precision = micro_tp / (micro_tp + micro_fp + eps)
-    micro_recall = micro_tp / (micro_tp + micro_fn + eps)
-    micro_f1 = (
-        2 * micro_precision * micro_recall / (micro_precision + micro_recall + eps)
-    )
-
-    overall_acc = correct.mean().item()
-
-    all_zeros_mask = targets.sum(dim=1) == 0
-    n_zeros = all_zeros_mask.sum().item()
-    no_action_acc = correct[all_zeros_mask].mean().item() if n_zeros > 0 else 0.0
-    n_no_action = n_zeros
-
-    all_ones_pred = preds.sum(dim=1) == targets.shape[1]
-    n_all_active_pred = all_ones_pred.sum().item()
-
-    return {
-        "loss": 0.0,
-        "overall_acc": overall_acc,
-        "macro_f1": macro_f1,
-        "micro_f1": micro_f1.item(),
-        "per_key_acc": {
-            k: float(v) for k, v in zip(key_names, per_key_acc, strict=True)
-        },
-        "per_key_f1": {
-            k: float(v)
-            for k, v in zip(key_names, per_key_f1.cpu().numpy(), strict=True)
-        },
-        "no_action_acc": no_action_acc,
-        "no_action_count": int(n_no_action),
-        "all_active_pred_count": int(n_all_active_pred),
-    }
-
-
-def aggregate_metrics(metrics_list: list[dict[str, Any]]) -> dict[str, Any]:
-    result = {}
-    if metrics_list and "per_key_acc" in metrics_list[0]:
-        keys = list(metrics_list[0]["per_key_acc"].keys())
-        for k in keys:
-            result[f"acc_{k}"] = float(
-                np.mean([m["per_key_acc"][k] for m in metrics_list])
-            )
-            result[f"f1_{k}"] = float(
-                np.mean([m["per_key_f1"][k] for m in metrics_list])
-            )
-    result["overall_acc"] = float(np.mean([m["overall_acc"] for m in metrics_list]))
-    result["macro_f1"] = float(np.mean([m.get("macro_f1", 0.0) for m in metrics_list]))
-    result["micro_f1"] = float(np.mean([m.get("micro_f1", 0.0) for m in metrics_list]))
-    na = [m["no_action_acc"] for m in metrics_list if m.get("no_action_count", 0) > 0]
-    result["no_action_acc"] = float(np.mean(na)) if na else 0.0
-    result["loss"] = float(np.mean([m["loss"] for m in metrics_list]))
-    return result
-
-
-# ---------------------------------------------------------------------------
 # Training / validation loops
 # ---------------------------------------------------------------------------
-
-
-@torch.no_grad()
-def find_optimal_thresholds(
-    model: nn.Module,
-    val_loader: DataLoader[tuple[torch.Tensor, torch.Tensor]],
-    device: torch.device,
-    key_names: list[str],
-) -> tuple[dict[str, float], dict[str, float]]:
-    model.eval()
-    all_logits: list[torch.Tensor] = []
-    all_targets: list[torch.Tensor] = []
-    for x, y in val_loader:
-        x: Tensor = (
-            x.to(device, non_blocking=True)
-            .to(dtype=torch.float16)
-            .div_(255.0)
-            .to(memory_format=torch.channels_last)
-        )
-        with autocast(device_type="cuda"):
-            logits: Tensor = model(x)
-
-        all_logits.append(logits.cpu())
-        all_targets.append(y)
-    if not all_logits:
-        return dict.fromkeys(key_names, THRESHOLD), dict.fromkeys(key_names, 0.0)
-    logits_cat: Tensor = torch.cat(all_logits)
-    targets_cat: Tensor = torch.cat(all_targets)
-    probs: Tensor = torch.sigmoid(logits_cat)
-
-    best_thresholds: dict[str, float] = {}
-    best_f1s: dict[str, float] = {}
-
-    thresholds_candidates = np.linspace(0.0, 1.0, THRESHOLD_CANDIDATES)[1:-1]
-
-    for k, key_name in enumerate(iterable=key_names):
-        p = probs[:, k].numpy()
-        t = targets_cat[:, k].numpy()
-
-        best_t = THRESHOLD
-        best_f1 = 0.0
-        for threshold in thresholds_candidates:
-            preds = (p >= threshold).astype(np.float32)
-            tp = float((preds * t).sum())
-            fp = float((preds * (1.0 - t)).sum())
-            fn = float(((1.0 - preds) * t).sum())
-            precision = tp / (tp + fp + 1e-8)
-            recall = tp / (tp + fn + 1e-8)
-            f1 = 2.0 * precision * recall / (precision + recall + 1e-8)
-            if f1 > best_f1:
-                best_f1 = f1
-                best_t = threshold
-
-        best_thresholds[key_name] = float(best_t)
-        best_f1s[key_name] = float(best_f1)
-
-    return best_thresholds, best_f1s
 
 
 def train_epoch(
@@ -264,8 +106,6 @@ def train_epoch(
 
         running_loss += loss.detach()
         n_batches += 1
-        if n_batches % 200 == 0:
-            pbar.set_postfix(loss=f"{loss.detach():.4f}")
         if profiler is not None:
             profiler.step()
 
@@ -275,14 +115,14 @@ def train_epoch(
 
 
 def make_train_step(
-    model: nn.Module, criterion: Callable[[torch.Tensor, torch.Tensor], torch.Tensor]
+    model: nn.Module,
+    criterion: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
+    uses_channels_last: bool,
 ) -> Callable[[torch.Tensor, torch.Tensor], torch.Tensor]:
     def train_step(x_raw: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-        x: Tensor = (
-            x_raw.to(dtype=torch.float16)
-            .div(255.0)
-            .to(memory_format=torch.channels_last)
-        )
+        x: Tensor = x_raw.to(dtype=torch.float16).div(255.0)
+        if uses_channels_last:
+            x = x.to(memory_format=torch.channels_last)
         logits: Tensor = model(x)
         loss: Tensor = criterion(logits, y)
         return loss
@@ -290,50 +130,95 @@ def make_train_step(
     return train_step
 
 
+def make_eval_step(
+    model: nn.Module,
+    criterion: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
+    uses_channels_last: bool,
+) -> Callable[[torch.Tensor, torch.Tensor], tuple[torch.Tensor, torch.Tensor]]:
+    def eval_step_fn(
+        x_raw: torch.Tensor, y: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        x: Tensor = x_raw.to(dtype=torch.float16).div(255.0)
+        if uses_channels_last:
+            x = x.to(memory_format=torch.channels_last)
+        logits: Tensor = model(x)
+        loss: Tensor = criterion(logits, y)
+        return logits, loss
+
+    return eval_step_fn
+
+
 @torch.no_grad()
 def eval_epoch(
-    model: nn.Module,
+    eval_step: Callable[
+        [torch.Tensor, torch.Tensor], tuple[torch.Tensor, torch.Tensor]
+    ],
     loader: DataLoader[tuple[torch.Tensor, torch.Tensor]],
-    criterion: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
     device: torch.device,
     key_names: list[str],
+    metric_collection: MetricCollection,
     epoch: int,
-    thresholds: dict[str, float] | None = None,
 ) -> dict[str, Any]:
-    model.eval()
     if len(loader) == 0:
-        empty: dict[str, Any] = {"loss": float("nan")}
-        for name in key_names:
-            empty[f"{name}_f1"] = float("nan")
-            empty[f"{name}_acc"] = float("nan")
-            empty[f"{name}_noact_acc"] = float("nan")
-        empty["mean_f1"] = float("nan")
-        empty["mean_acc"] = float("nan")
-        empty["mean_noact_acc"] = float("nan")
-        return empty
-    metrics_list = []
+        return {
+            "loss": float("nan"),
+            "macro_f1": float("nan"),
+            "micro_f1": float("nan"),
+            "overall_acc": float("nan"),
+            "no_action_acc": float("nan"),
+            "no_action_count": 0,
+            "all_active_pred_count": 0,
+            **{f"acc_{k}": float("nan") for k in key_names},
+            **{f"f1_{k}": float("nan") for k in key_names},
+        }
+
+    metric_collection.reset()
     running_loss = 0.0
+    no_action_correct = 0.0
+    no_action_total = 0
+    all_active_preds = 0
+
     pbar = tqdm(loader, desc=f"Epoch {epoch:3d} val  ", unit="batch", leave=False)
     for x, y in pbar:
-        x: Tensor = (
-            x.to(device, non_blocking=True)
-            .to(dtype=torch.float16)
-            .div_(255.0)
-            .to(memory_format=torch.channels_last)
-        )
+        x: Tensor = x.to(device, non_blocking=True)
         y: Tensor = y.to(device, non_blocking=True, dtype=torch.float32)
         with autocast(device_type="cuda"):
-            logits: Tensor = model(x)
-            loss: Tensor = criterion(logits, y)
+            logits, loss = eval_step(x, y)
 
         running_loss += loss.item()
-        m = compute_metrics(logits, y, key_names, thresholds=thresholds)
-        m["loss"] = loss.item()
-        metrics_list.append(m)
+        probs = torch.sigmoid(logits.detach())
+        metric_collection.update(probs.float(), y.int())
+
+        no_action_mask = y.sum(dim=1) == 0
+        no_action_count_batch = no_action_mask.sum()
+        if no_action_count_batch > 0:
+            no_action_total += int(no_action_count_batch.item()) * y.shape[1]
+            no_action_correct += int((probs[no_action_mask] <= THRESHOLD).sum().item())
+
+        all_active_preds += int((probs > THRESHOLD).all(dim=1).sum().item())
         pbar.set_postfix(loss=f"{loss.item():.4f}")
-    agg = aggregate_metrics(metrics_list)
-    agg["loss"] = running_loss / len(loader)
-    return agg
+
+    result = metric_collection.compute()
+
+    return {
+        "loss": running_loss / len(loader),
+        "macro_f1": float(result["macro_f1"]),
+        "micro_f1": float(result["micro_f1"]),
+        "overall_acc": float(result["overall_acc"]),
+        "no_action_acc": float(no_action_correct / no_action_total)
+        if no_action_total > 0
+        else 0.0,
+        "no_action_count": no_action_total,
+        "all_active_pred_count": all_active_preds,
+        **{
+            f"acc_{k}": float(v)
+            for k, v in zip(key_names, result["per_key_acc"], strict=True)
+        },
+        **{
+            f"f1_{k}": float(v)
+            for k, v in zip(key_names, result["per_key_f1"], strict=True)
+        },
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -440,7 +325,8 @@ def find_worst_predictions_per_key(
     model: nn.Module,
     device: torch.device,
     key_names: list[str],
-    top_k: int = 20,
+    uses_channels_last: bool,
+    top_k: int = TOP_K_WORST_PREDS,
 ) -> dict[str, list[dict[str, object]]]:
     model.eval()
     num_keys = len(key_names)
@@ -460,19 +346,17 @@ def find_worst_predictions_per_key(
     for x_batch, y_batch in pbar:
         x_batch_cpu = x_batch.clone()
         x_batch = (
-            x_batch.to(device, non_blocking=True)
-            .to(dtype=torch.float16)
-            .div_(255.0)
-            .to(memory_format=torch.channels_last)
+            x_batch.to(device, non_blocking=True).to(dtype=torch.float16).div_(255.0)
         )
+        if uses_channels_last:
+            x_batch = x_batch.to(memory_format=torch.channels_last)
         with autocast("cuda"):
             logits = model(x_batch)
             probs = torch.sigmoid(logits)
 
-        eps = EPSILON
         y_np = y_batch.numpy()
-        p_np = np.clip(probs.cpu().numpy(), eps, 1.0 - eps)
-        bce = -(y_np * np.log(p_np + eps) + (1 - y_np) * np.log(1 - p_np + eps))
+        p_np = np.clip(probs.cpu().numpy(), EPSILON, 1.0 - EPSILON)
+        bce = -(y_np * np.log(p_np + EPSILON) + (1 - y_np) * np.log(1 - p_np + EPSILON))
 
         batch_size = y_np.shape[0]
         for i in range(batch_size):
@@ -583,10 +467,49 @@ def main() -> None:
         action="store_true",
         help="Like --profile, but also record memory and input shapes.",
     )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="resnet",
+        choices=InverseDynamicsModel.list_models(),
+        help=f"Model architecture (default: resnet, available: {InverseDynamicsModel.list_models()})",
+    )
+    parser.add_argument(
+        "--window-size",
+        type=int,
+        default=None,
+        help="Override model window_size",
+    )
+    parser.add_argument(
+        "--label-index",
+        type=int,
+        default=None,
+        help="Override model label_index",
+    )
+    parser.add_argument(
+        "--stride",
+        type=int,
+        default=None,
+        help="Override model stride",
+    )
+    parser.add_argument(
+        "--signed-diff",
+        action="store_true",
+        help="Use signed-diff collate function (replaces frame_t with frame_t - frame_{t-1})",
+    )
     args = parser.parse_args()
 
-    cosine_t_max = max(args.epochs // COSINE_T_MAX_DIVISOR, 1)
-    min_lr_ratio = MIN_LR / LR
+    model_cls = InverseDynamicsModel.get(args.model)
+    model_config = model_cls.config()
+
+    window_size = (
+        args.window_size if args.window_size is not None else model_config.window_size
+    )
+    label_index_default = (window_size - 1) // 2
+    label_index = (
+        args.label_index if args.label_index is not None else label_index_default
+    )
+    stride = args.stride if args.stride is not None else model_config.stride
 
     out_dir = (
         INVERSE_DYNAMIC_RUNS_DIR
@@ -606,64 +529,102 @@ def main() -> None:
     num_keys = len(key_names)
     pos_weight = torch.as_tensor(ds_info["pos_weight"], dtype=torch.float32)
 
-    train_ds = ChunkedDataset(chunk_dir=PROCESSED_DATA_DIR / "train")
-    val_ds = ChunkedDataset(chunk_dir=PROCESSED_DATA_DIR / "val")
-    test_ds = ChunkedDataset(chunk_dir=PROCESSED_DATA_DIR / "test")
+    train_ds = WindowedDataset(
+        processed_dir=PROCESSED_DATA_DIR,
+        split="train",
+        window_size=window_size,
+        label_index=label_index,
+        stride=stride,
+    )
+    val_ds = WindowedDataset(
+        processed_dir=PROCESSED_DATA_DIR,
+        split="val",
+        window_size=window_size,
+        label_index=label_index,
+        stride=stride,
+    )
+    test_ds = WindowedDataset(
+        processed_dir=PROCESSED_DATA_DIR,
+        split="test",
+        window_size=window_size,
+        label_index=label_index,
+        stride=stride,
+    )
     print(f"Split: train={len(train_ds):,}  val={len(val_ds):,}  test={len(test_ds):,}")
 
     device = get_device()
     print(f"Device: {device}")
 
+    model_cls_any: Any = model_cls
+    model = model_cls_any(window_size=window_size, num_keys=num_keys, dropout=model_config.dropout)  # fmt: skip
+    print(f"Model: {model_cls.__name__}")
+    if model_config.uses_channels_last:
+        model = model.to(device, memory_format=torch.channels_last)  # type: ignore
+    else:
+        model = model.to(device)  # type: ignore
+
+    collate_fn = signed_diff_collate if args.signed_diff else None
+
     train_loader: DataLoader[tuple[Tensor, Tensor]] = build_loader(
-        train_ds, BATCH_SIZE, shuffle=True, num_workers=NUM_WORKERS
+        train_ds,
+        model_config.batch_size,
+        shuffle=True,
+        num_workers=NUM_WORKERS,
+        collate_fn=collate_fn,
     )
     val_loader: DataLoader[tuple[Tensor, Tensor]] = build_loader(
         val_ds,
-        BATCH_SIZE * VAL_BATCH_MULTIPLIER,
+        model_config.batch_size * model_config.val_batch_multiplier,
         shuffle=False,
         num_workers=NUM_WORKERS,
         drop_last=False,
+        collate_fn=collate_fn,
     )
     test_loader: DataLoader[tuple[Tensor, Tensor]] = build_loader(
         test_ds,
-        BATCH_SIZE * VAL_BATCH_MULTIPLIER,
+        model_config.batch_size * model_config.val_batch_multiplier,
         shuffle=False,
         num_workers=NUM_WORKERS,
         drop_last=False,
+        collate_fn=collate_fn,
     )
 
-    criterion: partial[Tensor] = partial(
-        focal_loss_with_logits, pos_weight=pos_weight.to(device)
-    )
-    model = InverseDynamicsResNet(num_keys=num_keys, dropout=DROPOUT)
-    model = model.to(device, memory_format=torch.channels_last)  # type: ignore
-    train_step = make_train_step(model, criterion)
+    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight.to(device))
+    train_step = make_train_step(model, criterion, model_config.uses_channels_last)
     try:
-        train_step = torch.compile(train_step, mode="reduce-overhead")
+        train_step = torch.compile(train_step)
         print("  torch.compile: enabled")
     except Exception as e:
         print(f"  torch.compile: failed ({e}), running uncompiled")
+    eval_step = make_eval_step(model, criterion, model_config.uses_channels_last)
+    try:
+        eval_step = torch.compile(eval_step, dynamic=False)
+        print("  eval torch.compile: enabled")
+    except Exception as e:
+        print(f"  eval torch.compile: failed ({e}), running uncompiled")
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Model params: {n_params:,}")
+
+    metric_collection = MetricCollection(
+        {
+            "macro_f1": MultilabelF1Score(num_labels=num_keys, average="macro"),
+            "micro_f1": MultilabelF1Score(num_labels=num_keys, average="micro"),
+            "overall_acc": MultilabelAccuracy(num_labels=num_keys, average="micro"),
+            "per_key_f1": MultilabelF1Score(num_labels=num_keys, average="none"),
+            "per_key_acc": MultilabelAccuracy(num_labels=num_keys, average="none"),
+        }
+    ).to(device)
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=LR,
-        weight_decay=ADAMW_WEIGHT_DECAY,
-        fused=ADAMW_FUSED,
+        weight_decay=model_config.weight_decay,
+        fused=True,
     )
 
-    def lr_lambda(epoch: int) -> float:
-        if epoch < PLATEAU_EPOCHS:
-            return 1.0
-        if epoch < PLATEAU_EPOCHS + cosine_t_max:
-            progress: int | float = (epoch - PLATEAU_EPOCHS) / max(cosine_t_max, 1)
-            return min_lr_ratio + (1.0 - min_lr_ratio) * (
-                0.5 * (1.0 + math.cos(math.pi * progress))
-            )
-        return min_lr_ratio
-
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, patience=PLATEAU_PATIENCE
+    )
     scaler = GradScaler(device="cuda")
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -726,9 +687,16 @@ def main() -> None:
             prof_ctx = nullcontext()
             prof = None
             return
-        scheduler.step()
-        current_lr = scheduler.get_last_lr()[0]
-        val_metrics = eval_epoch(model, val_loader, criterion, device, key_names, epoch)
+        model.eval()
+        val_metrics = eval_epoch(
+            eval_step,
+            val_loader,
+            device,
+            key_names,
+            metric_collection,
+            epoch,
+        )
+        scheduler.step(val_metrics["loss"])
 
         history["train_loss"].append(train_metrics["loss"].item())
         history["train_macro_f1"].append(val_metrics["macro_f1"])  # val as proxy
@@ -743,7 +711,7 @@ def main() -> None:
         print(
             f"{epoch:5d} {train_metrics['loss']:10.4f} {val_metrics['loss']:10.4f} "
             f"{val_metrics['macro_f1']:8.4f} {val_metrics['overall_acc']:8.4f} "
-            f"{val_metrics['no_action_acc']:8.4f} {current_lr:10.2e}"
+            f"{val_metrics['no_action_acc']:8.4f} {scheduler.get_last_lr()[0]:10.2e}"
         )
 
         if val_metrics["macro_f1"] > best_val_f1:
@@ -763,17 +731,6 @@ def main() -> None:
         else:
             patience_counter += 1
 
-        if epoch % CHECKPOINT_FREQ == 0:
-            torch.save(
-                {
-                    "epoch": epoch,
-                    "model_state_dict": model.state_dict(),
-                    "optimizer_state_dict": optimizer.state_dict(),
-                    "key_names": key_names,
-                },
-                out_dir / f"checkpoint_epoch{epoch:03d}.pt",
-            )
-
         if patience_counter >= PATIENCE:
             print(
                 f"\nEarly stopping at epoch {epoch} (no improvement for {PATIENCE} epochs)"
@@ -788,20 +745,14 @@ def main() -> None:
         out_dir / "best_model.pt", map_location=device, weights_only=False
     )
     model.load_state_dict(ckpt["model_state_dict"])
-    print("\nTuning per-key thresholds on validation set...")
-    optimal_thresholds, threshold_f1s = find_optimal_thresholds(
-        model, val_loader, device, key_names
-    )
-    for k in key_names:
-        print(f"  {k}: thr={optimal_thresholds[k]:.2f}  val_f1={threshold_f1s[k]:.4f}")
+    model.eval()
     test_metrics = eval_epoch(
-        model,
+        eval_step,
         test_loader,
-        criterion,
         device,
         key_names,
+        metric_collection,
         0,
-        thresholds=optimal_thresholds,
     )
     print(f"Test macro F1: {test_metrics['macro_f1']:.4f}")
     print(f"Test micro F1: {test_metrics['micro_f1']:.4f}")
@@ -818,7 +769,11 @@ def main() -> None:
 
     print("\nGenerating worst-prediction visualizations per key...")
     worst_preds_per_key = find_worst_predictions_per_key(
-        test_ds, model, device, key_names, top_k=TOP_K
+        test_ds,
+        model,
+        device,
+        key_names,
+        model_config.uses_channels_last,
     )
     for key_name in key_names:
         items = worst_preds_per_key.get(key_name, [])
@@ -836,7 +791,6 @@ def main() -> None:
     metrics_json = {
         "best_epoch": best_epoch,
         "best_val_macro_f1": best_val_f1,
-        "optimal_thresholds": optimal_thresholds,
         "test_metrics": {
             "macro_f1": test_metrics["macro_f1"],
             "micro_f1": test_metrics["micro_f1"],
@@ -845,22 +799,26 @@ def main() -> None:
             "per_key_acc": {k: test_metrics[f"acc_{k}"] for k in key_names},
             "per_key_f1": {k: test_metrics[f"f1_{k}"] for k in key_names},
         },
-        "history": {k: v[-1] for k, v in history.items() if k.startswith("val_")},
         "config": {
-            "loss": "focal",
-            "batch_size": BATCH_SIZE,
+            "loss": "bce",
+            "model": args.model,
+            "batch_size": model_config.batch_size,
             "epochs": len(history["train_loss"]),
             "lr": LR,
-            "min_lr": MIN_LR,
-            "dropout": DROPOUT,
+            "dropout": model_config.dropout,
+            "weight_decay": model_config.weight_decay,
             "patience": PATIENCE,
-            "plateau_epochs": PLATEAU_EPOCHS,
-            "cosine_t_max": cosine_t_max,
+            "plateau_patience": PLATEAU_PATIENCE,
             "model_params": n_params,
             "train_windows": len(train_ds),
-            "val_pairs": len(val_ds),
-            "test_pairs": len(test_ds),
+            "val_windows": len(val_ds),
+            "test_windows": len(test_ds),
+            "window_size": window_size,
+            "label_index": label_index,
+            "stride": stride,
+            "uses_channels_last": model_config.uses_channels_last,
         },
+        "history": dict(history),
     }
     with open(out_dir / "metrics.json", "w") as f:
         json.dump(metrics_json, f, indent=2)

@@ -2,24 +2,13 @@ from pathlib import Path
 
 SEED = 42
 
-# Target resolution for training data. Video is resized to this during
-# preprocessing. 640x360 (360p) preserves the 16:9 aspect ratio.
-TARGET_WIDTH = 640
-TARGET_HEIGHT = 360
+# Target resolution for training data. Video is resized to this during preprocessing.
+TARGET_WIDTH = 320
+TARGET_HEIGHT = 180
 TARGET_SIZE: tuple[int, int] = (TARGET_WIDTH, TARGET_HEIGHT)
-FPS = 20
-
-# Subsampling step from master recording fps to training fps.
-# Master is recorded at 60 fps; every 3rd frame gives ~20 fps.
-SUBSAMPLE_STEP = 3
 
 # Duration threshold for AFK detection (idle frames removed).
-AFK_DURATION_SECONDS = 4.0
-
-# Tolerance for detecting pixel-identical consecutive frames within a window.
-# Windows where all consecutive frame pairs match below this threshold are
-# discarded (they carry no motion signal).
-STATIC_WINDOW_TOLERANCE = 0.0
+AFK_DURATION_SECONDS = 3.0
 
 CODEC = "av1_nvenc"
 CQ = "32"
@@ -49,6 +38,7 @@ DOWNLOAD_DIR: Path = DATA_DIR / Path("downloaded_gameplay")
 COMPRESSED_DIR: Path = DATA_DIR / Path("compressed_downloaded_gameplay")
 RUNS_DIR: Path = DATA_DIR / Path("recorded_gameplay")
 PROCESSED_DATA_DIR: Path = DATA_DIR / Path("processed_recorded_gameplay")
+DATA_CHUNKS_DIR: Path = DATA_DIR / Path("recorded_gameplay_chunks")
 INVERSE_DYNAMIC_RUNS_DIR: Path = DATA_DIR / Path("id_runs")
 
 KEY_ORDER = [
@@ -69,30 +59,25 @@ KEY_ORDER = [
 
 # Model Training
 
-INPUT_CHANNELS = 2
 VAL_FRAC = 0.10
 TEST_FRAC = 0.10
 TRIM_EDGE_FRAC = 0.01
 DUPE_EPSILON = 1.0
-CHUNK_SIZE = 10000
+
+# --- Chunked video preprocessing ---
+RAW_CHUNK_SIZE_GB = 5
+DECODE_BATCH_SIZE = 1000
 
 EPOCHS = 100
-LR = 1e-3
-MIN_LR = 1e-6
-PATIENCE = 5
-PLATEAU_EPOCHS = 10
+LR = 5e-3
+PLATEAU_PATIENCE = 5
+PATIENCE = 10
 NUM_WORKERS = 0
 
-ADAMW_FUSED = True
-
-COSINE_T_MAX_DIVISOR = 3
-
-THRESHOLD_CANDIDATES = 81
 WORST_PRED_BATCH_SIZE = 256
-TOP_K = 20
+TOP_K_WORST_PREDS = 4
 EPSILON = 1e-8
 THRESHOLD = 0.5
-CHECKPOINT_FREQ = 10
 RUN_TIMESTAMP_FORMAT = "%Y%m%d_%H%M"
 
 # Profiling

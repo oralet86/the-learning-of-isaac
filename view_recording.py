@@ -16,7 +16,7 @@ from typing import Any
 import numpy as np
 from PIL import Image, ImageTk
 
-from constants import FPS, RUNS_DIR, TARGET_SIZE
+from constants import MASTER_FPS, RUNS_DIR, TARGET_SIZE
 
 SCALE = 4  # scale frames up for visibility (used when src is 284 wide)
 SCALE_MASTER = 1  # 720p @ 1x is already display-sized
@@ -115,7 +115,9 @@ class Viewer:
             else:
                 target = self.meta.get("target_size", list(TARGET_SIZE))
                 self.src_width, self.src_height = int(target[0]), int(target[1])
-            self.fps = int(self.meta.get("master_fps", self.meta.get("fps", FPS)))
+            self.fps = int(
+                self.meta.get("master_fps", self.meta.get("fps", MASTER_FPS))
+            )
 
         print(f"Loading frames from {self.video_path} ...")
         self.frames = load_frames(str(self.video_path), self.src_width, self.src_height)

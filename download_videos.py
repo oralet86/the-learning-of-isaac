@@ -68,31 +68,33 @@ def make_download_opts(folder_slug: str) -> dict[str, Any]:
 
 
 def extract_playlist(url: str) -> tuple[str, list[dict[str, Any]]]:
-    opts = {
+    opts: dict[str, object] = {
         "extract_flat": "in_playlist",
         "quiet": True,
         "ignoreerrors": True,
     }
-    with yt_dlp.YoutubeDL(opts) as ydl:
+    with yt_dlp.YoutubeDL(opts) as ydl:  # pyright: ignore[reportArgumentType]
         info = ydl.extract_info(url, download=False)
 
     if info is None:
         raise RuntimeError(f"Could not extract info from: {url}")
 
     if "entries" in info:
-        title = info.get("title") or info.get("playlist_title") or "Unknown_Playlist"
+        title: str = str(
+            info.get("title") or info.get("playlist_title") or "Unknown_Playlist"
+        )
         entries = [e for e in info["entries"] if e is not None]
     else:
-        title = info.get("title") or "Unknown"
+        title = str(info.get("title") or "Unknown")
         entries = [info]
 
-    return title, entries
+    return title, entries  # pyright: ignore[reportReturnType]
 
 
 def download_one(video_url: str, folder_slug: str) -> bool:
     opts = make_download_opts(folder_slug)
     try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
+        with yt_dlp.YoutubeDL(opts) as ydl:  # pyright: ignore[reportArgumentType]
             ydl.download([video_url])
         return True
     except Exception as e:

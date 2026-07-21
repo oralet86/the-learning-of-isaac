@@ -5,13 +5,13 @@ from typing import override
 import torch
 import torch.nn as nn
 
-from constants import INPUT_CHANNELS
+from components.inverse_dynamics_model import InverseDynamicsModel, ModelConfig
 
-RESIDUAL_DROPOUT = 0.2
-DROPOUT = 0.4
-BATCH_SIZE = 128
-VAL_BATCH_MULTIPLIER = 2
-ADAMW_WEIGHT_DECAY = 5e-3
+_RESIDUAL_DROPOUT = 0.2
+_DROPOUT = 0.4
+_BATCH_SIZE = 256
+_VAL_BATCH_MULTIPLIER = 2
+_ADAMW_WEIGHT_DECAY = 1e-2
 
 
 class ResidualBlock(nn.Module):
@@ -37,7 +37,7 @@ class ResidualBlock(nn.Module):
             self.downsample = nn.Identity()
 
         self.relu = nn.ReLU(inplace=True)
-        self.dropout = nn.Dropout2d(RESIDUAL_DROPOUT)
+        self.dropout = nn.Dropout2d(_RESIDUAL_DROPOUT)
 
     @override
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -49,15 +49,15 @@ class ResidualBlock(nn.Module):
         return self.relu(out)
 
 
-class InverseDynamicsResNet(nn.Module):
+class InverseDynamicsResNet(InverseDynamicsModel, nn.Module, model_name="resnet"):
     def __init__(
         self,
-        in_channels: int = INPUT_CHANNELS,
+        window_size: int = 2,
         num_keys: int = 13,
-        dropout: float = 0.3,
+        dropout: float = _DROPOUT,
     ) -> None:
         super().__init__()
-        self.conv1 = nn.Conv2d(in_channels, 16, 7, stride=2, padding=3, bias=False)
+        self.conv1 = nn.Conv2d(window_size, 16, 7, stride=2, padding=3, bias=False)
         self.bn1 = nn.BatchNorm2d(16)
         self.maxpool = nn.MaxPool2d(3, stride=2, padding=1)
 
@@ -104,3 +104,17 @@ class InverseDynamicsResNet(nn.Module):
         x = torch.flatten(x, 1)
         x = self.dropout(x)
         return self.fc(x)
+
+    @classmethod
+    @override
+    def config(cls) -> ModelConfig:
+        return ModelConfig(
+            batch_size=_BATCH_SIZE,
+            val_batch_multiplier=_VAL_BATCH_MULTIPLIER,
+            dropout=_DROPOUT,
+            weight_decay=_ADAMW_WEIGHT_DECAY,
+            window_size=2,
+            label_index=0,
+            stride=3,
+            uses_channels_last=True,
+        )
