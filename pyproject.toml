@@ -10,6 +10,7 @@ dependencies = [
     "pillow",
     "pynput",
     "pyright>=1.1.411",
+    "pyside6>=6.11.1",
     "ruff>=0.15.22",
     "scikit-learn>=1.9.0",
     "scikit-multilearn",
