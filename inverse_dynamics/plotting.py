@@ -156,8 +156,8 @@ def find_worst_predictions_per_key(
             probs = torch.sigmoid(logits)
 
         y_np = y_batch.numpy()
-        p_np = np.clip(probs.cpu().numpy(), EPSILON, 1.0 - EPSILON)
-        bce = -(y_np * np.log(p_np + EPSILON) + (1 - y_np) * np.log(1 - p_np + EPSILON))
+        p_np = np.clip(probs.cpu().numpy().astype(np.float32), EPSILON, 1.0 - EPSILON)
+        bce = -(y_np * np.log(p_np) + (1 - y_np) * np.log(1 - p_np))
 
         batch_size = y_np.shape[0]
         for i in range(batch_size):

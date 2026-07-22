@@ -14,6 +14,11 @@ _BATCH_SIZE = 256
 _VAL_BATCH_MULTIPLIER = 2
 _ADAMW_WEIGHT_DECAY = 1e-2
 
+# Values determined by empirical ablation studies.
+_WINDOW_SIZE = 9
+_LABEL_INDEX = 3
+_STRIDE = 2
+
 
 class ResidualBlock(nn.Module):
     """Standard pre-activation-style residual block with 3x3 convolutions."""
@@ -120,8 +125,8 @@ class InverseDynamicsResNetLite(
             val_batch_multiplier=_VAL_BATCH_MULTIPLIER,
             dropout=_DROPOUT,
             weight_decay=_ADAMW_WEIGHT_DECAY,
-            window_size=2,
-            label_index=0,
-            stride=3,
+            window_size=_WINDOW_SIZE,
+            label_index=_LABEL_INDEX,
+            stride=_STRIDE,
             uses_channels_last=True,
         )
