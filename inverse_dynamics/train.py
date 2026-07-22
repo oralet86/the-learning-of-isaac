@@ -416,7 +416,7 @@ def main() -> None:
         prof_ctx = nullcontext()
 
     history: dict[str, list[float]] = defaultdict(list)
-    best_val_f1 = -1.0
+    best_val_loss = float("inf")
     best_epoch = 0
     patience_counter = 0
 
@@ -478,8 +478,8 @@ def main() -> None:
             f"{val_metrics['no_action_acc']:8.4f} {scheduler.get_last_lr()[0]:10.2e}"
         )
 
-        if val_metrics["macro_f1"] > best_val_f1:
-            best_val_f1 = val_metrics["macro_f1"]
+        if val_metrics["loss"] < best_val_loss:
+            best_val_loss = val_metrics["loss"]
             best_epoch = epoch
             patience_counter = 0
             torch.save(
@@ -501,7 +501,7 @@ def main() -> None:
             )
             break
 
-    print(f"\nBest validation macro F1: {best_val_f1:.4f} at epoch {best_epoch}")
+    print(f"\nBest validation loss: {best_val_loss:.4f} at epoch {best_epoch}")
 
     # Test evaluation
     print("\nLoading best model for test evaluation...")
@@ -554,7 +554,7 @@ def main() -> None:
 
     metrics_json = {
         "best_epoch": best_epoch,
-        "best_val_macro_f1": best_val_f1,
+        "best_val_loss": best_val_loss,
         "test_metrics": {
             "macro_f1": test_metrics["macro_f1"],
             "micro_f1": test_metrics["micro_f1"],
