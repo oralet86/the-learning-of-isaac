@@ -21,8 +21,9 @@ from torchmetrics.classification import MultilabelAccuracy, MultilabelF1Score
 from tqdm import tqdm
 
 from components import (
-    InverseDynamicsModel,
+    TrainingConfig,
 )
+from components.inverse_dynamics_model import InverseDynamicsModel
 from constants import (
     ABLATION_DATA_FRAC,
     DEFAULT_MODE,
@@ -118,7 +119,7 @@ def train_epoch(
 
 def make_train_step(
     model: nn.Module,
-    criterion: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
+    criterion: nn.Module,
     uses_channels_last: bool,
 ) -> Callable[[torch.Tensor, torch.Tensor], torch.Tensor]:
     def train_step(x_raw: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
@@ -134,9 +135,13 @@ def make_train_step(
 
 def make_eval_step(
     model: nn.Module,
-    criterion: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
+    criterion: nn.Module,
     uses_channels_last: bool,
 ) -> Callable[[torch.Tensor, torch.Tensor], tuple[torch.Tensor, torch.Tensor]]:
+    to_probs = getattr(
+        criterion, "to_binary_probs", lambda t: torch.sigmoid(t.detach())
+    )
+
     def eval_step_fn(
         x_raw: torch.Tensor, y: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -145,7 +150,8 @@ def make_eval_step(
             x = x.to(memory_format=torch.channels_last)
         logits: Tensor = model(x)
         loss: Tensor = criterion(logits, y)
-        return logits, loss
+        probs: Tensor = to_probs(logits)
+        return probs, loss
 
     return eval_step_fn
 
@@ -185,10 +191,9 @@ def eval_epoch(
         x: Tensor = x.to(device, non_blocking=True)
         y: Tensor = y.to(device, non_blocking=True, dtype=torch.float32)
         with autocast(device_type="cuda"):
-            logits, loss = eval_step(x, y)
+            probs, loss = eval_step(x, y)
 
         running_loss += loss.item()
-        probs = torch.sigmoid(logits.detach())
         metric_collection.update(probs.float(), y.int())
 
         no_action_mask = y.sum(dim=1) == 0
@@ -264,18 +269,14 @@ def main() -> None:
         default=None,
         help="Override model stride",
     )
+    parser.add_argument(
+        "--loss",
+        type=str,
+        default="grouped_ce",
+        choices=["bce", "grouped_ce"],
+        help="Loss function (default: grouped_ce)",
+    )
     args = parser.parse_args()
-
-    model_cls = InverseDynamicsModel.get(args.model)
-    model_config = model_cls.config()
-
-    window_size = (
-        args.window_size if args.window_size is not None else model_config.window_size
-    )
-    label_index = (
-        args.label_index if args.label_index is not None else model_config.label_index
-    )
-    stride = args.stride if args.stride is not None else model_config.stride
 
     out_dir = (
         INVERSE_DYNAMIC_RUNS_DIR
@@ -292,76 +293,86 @@ def main() -> None:
     with open(info_path) as f:
         ds_info = json.load(f)
     key_names: list[str] = ds_info["key_names"]
-    num_keys = len(key_names)
-    pos_weight = torch.as_tensor(ds_info["pos_weight"], dtype=torch.float32)
+    pos_weight_full = torch.as_tensor(ds_info["pos_weight"], dtype=torch.float32)
 
     data_frac = ABLATION_DATA_FRAC if args.mode == "ablation" else 1.0
+
+    device = get_device()
+    print(f"Device: {device}")
+
+    cfg = TrainingConfig.build(
+        model_name=args.model,
+        loss_name=args.loss,
+        window_size_override=args.window_size,
+        label_index_override=args.label_index,
+        stride_override=args.stride,
+        key_names=key_names,
+        pos_weight=pos_weight_full,
+        device=device,
+    )
+    criterion: nn.Module = cfg.criterion
 
     train_ds = WindowedDataset(
         processed_dir=PROCESSED_DATA_DIR,
         split="train",
-        window_size=window_size,
-        label_index=label_index,
-        stride=stride,
+        window_size=cfg.window_size,
+        label_index=cfg.label_index,
+        stride=cfg.stride,
         data_frac=data_frac,
     )
     val_ds = WindowedDataset(
         processed_dir=PROCESSED_DATA_DIR,
         split="val",
-        window_size=window_size,
-        label_index=label_index,
-        stride=stride,
+        window_size=cfg.window_size,
+        label_index=cfg.label_index,
+        stride=cfg.stride,
     )
     test_ds = WindowedDataset(
         processed_dir=PROCESSED_DATA_DIR,
         split="test",
-        window_size=window_size,
-        label_index=label_index,
-        stride=stride,
+        window_size=cfg.window_size,
+        label_index=cfg.label_index,
+        stride=cfg.stride,
     )
     print(f"Split: train={len(train_ds):,}  val={len(val_ds):,}  test={len(test_ds):,}")
 
-    device = get_device()
-    print(f"Device: {device}")
-
-    model_cls_any: Any = model_cls
-    model = model_cls_any(window_size=window_size, num_keys=num_keys, dropout=model_config.dropout)  # fmt: skip
-    print(f"Model: {model_cls.__name__}")
-    if model_config.uses_channels_last:
+    model_cls_any: Any = cfg.model_cls
+    model = model_cls_any(window_size=cfg.window_size, num_keys=cfg.num_output_logits, dropout=cfg.dropout)  # fmt: skip
+    print(f"Model: {cfg.model_name}")
+    if cfg.uses_channels_last:
         model = model.to(device, memory_format=torch.channels_last)  # type: ignore
     else:
         model = model.to(device)  # type: ignore
 
     train_loader: DataLoader[tuple[Tensor, Tensor]] = build_loader(
         train_ds,
-        model_config.batch_size,
+        cfg.batch_size,
         shuffle=True,
         num_workers=NUM_WORKERS,
         drop_last=True,
     )
     val_loader: DataLoader[tuple[Tensor, Tensor]] = build_loader(
         val_ds,
-        model_config.batch_size * model_config.val_batch_multiplier,
+        cfg.batch_size * cfg.val_batch_multiplier,
         shuffle=False,
         num_workers=NUM_WORKERS,
         drop_last=False,
     )
     test_loader: DataLoader[tuple[Tensor, Tensor]] = build_loader(
         test_ds,
-        model_config.batch_size * model_config.val_batch_multiplier,
+        cfg.batch_size * cfg.val_batch_multiplier,
         shuffle=False,
         num_workers=NUM_WORKERS,
         drop_last=False,
     )
 
-    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight.to(device))
-    train_step = make_train_step(model, criterion, model_config.uses_channels_last)
+    train_step = make_train_step(model, criterion, cfg.uses_channels_last)
     try:
         train_step = torch.compile(train_step, mode="max-autotune")
         print("  torch.compile: enabled")
     except Exception as e:
         print(f"  torch.compile: failed ({e}), running uncompiled")
-    eval_step = make_eval_step(model, criterion, model_config.uses_channels_last)
+    eval_step = make_eval_step(model, criterion, cfg.uses_channels_last)
     try:
         eval_step = torch.compile(eval_step, dynamic=False, mode="max-autotune")
         print("  eval torch.compile: enabled")
@@ -372,18 +383,18 @@ def main() -> None:
 
     metric_collection = MetricCollection(
         {
-            "macro_f1": MultilabelF1Score(num_labels=num_keys, average="macro"),
-            "micro_f1": MultilabelF1Score(num_labels=num_keys, average="micro"),
-            "overall_acc": MultilabelAccuracy(num_labels=num_keys, average="micro"),
-            "per_key_f1": MultilabelF1Score(num_labels=num_keys, average="none"),
-            "per_key_acc": MultilabelAccuracy(num_labels=num_keys, average="none"),
+            "macro_f1": MultilabelF1Score(num_labels=cfg.num_keys, average="macro"),
+            "micro_f1": MultilabelF1Score(num_labels=cfg.num_keys, average="micro"),
+            "overall_acc": MultilabelAccuracy(num_labels=cfg.num_keys, average="micro"),
+            "per_key_f1": MultilabelF1Score(num_labels=cfg.num_keys, average="none"),
+            "per_key_acc": MultilabelAccuracy(num_labels=cfg.num_keys, average="none"),
         }
     ).to(device)
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=LR,
-        weight_decay=model_config.weight_decay,
+        weight_decay=cfg.weight_decay,
         fused=True,
     )
 
@@ -444,7 +455,7 @@ def main() -> None:
             prof.stop()
             trace_path: Path = out_dir / "train_trace.json"
             table_path: Path = out_dir / "averages_table.txt"
-            prof.export_chrome_trace(path=str(object=trace_path))
+            prof.export_chrome_trace(path=str(trace_path))
             with open(file=table_path, mode="w+") as f:
                 f.write(prof.key_averages().table(sort_by="cuda_time_total"))
 
@@ -538,7 +549,8 @@ def main() -> None:
         model,
         device,
         key_names,
-        model_config.uses_channels_last,
+        cfg.uses_channels_last,
+        to_probs_fn=criterion.to_binary_probs,
     )
     for key_name in key_names:
         items = worst_preds_per_key.get(key_name, [])
@@ -564,26 +576,17 @@ def main() -> None:
             "per_key_acc": {k: test_metrics[f"acc_{k}"] for k in key_names},
             "per_key_f1": {k: test_metrics[f"f1_{k}"] for k in key_names},
         },
-        "config": {
-            "loss": "bce",
-            "model": args.model,
-            "mode": args.mode,
-            "batch_size": model_config.batch_size,
-            "epochs": len(history["train_loss"]),
-            "lr": LR,
-            "dropout": model_config.dropout,
-            "weight_decay": model_config.weight_decay,
-            "patience": PATIENCE,
-            "plateau_patience": PLATEAU_PATIENCE,
-            "model_params": n_params,
-            "train_windows": len(train_ds),
-            "val_windows": len(val_ds),
-            "test_windows": len(test_ds),
-            "window_size": window_size,
-            "label_index": label_index,
-            "stride": stride,
-            "uses_channels_last": model_config.uses_channels_last,
-        },
+        "config": cfg.to_dict(
+            mode=args.mode,
+            epochs=len(history["train_loss"]),
+            lr=LR,
+            patience=PATIENCE,
+            plateau_patience=PLATEAU_PATIENCE,
+            model_params=n_params,
+            train_windows=len(train_ds),
+            val_windows=len(val_ds),
+            test_windows=len(test_ds),
+        ),
         "history": dict(history),
     }
     with open(out_dir / "metrics.json", "w") as f:

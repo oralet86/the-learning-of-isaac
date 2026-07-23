@@ -25,6 +25,8 @@ torch.set_float32_matmul_precision(precision="high")
 torch.backends.cudnn.benchmark = True
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from torch import Tensor
     from torch.utils.data import Dataset
 
@@ -128,9 +130,12 @@ def find_worst_predictions_per_key(
     key_names: list[str],
     uses_channels_last: bool,
     top_k: int = TOP_K_WORST_PREDS,
+    to_probs_fn: Callable[[torch.Tensor], torch.Tensor] | None = None,
 ) -> dict[str, list[dict[str, object]]]:
     model.eval()
     num_keys = len(key_names)
+    if to_probs_fn is None:
+        to_probs_fn = torch.sigmoid
 
     per_key_items: list[list[tuple[float, np.ndarray, float, float]]] = [
         [] for _ in range(num_keys)
@@ -153,7 +158,7 @@ def find_worst_predictions_per_key(
             x_batch = x_batch.to(memory_format=torch.channels_last)
         with autocast("cuda"):
             logits = model(x_batch)
-            probs = torch.sigmoid(logits)
+            probs = to_probs_fn(logits)
 
         y_np = y_batch.numpy()
         p_np = np.clip(probs.cpu().numpy().astype(np.float32), EPSILON, 1.0 - EPSILON)
