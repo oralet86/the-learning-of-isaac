@@ -64,6 +64,7 @@ VAL_FRAC = 0.10
 TEST_FRAC = 0.10
 TRIM_EDGE_FRAC = 0.01
 DUPE_EPSILON = 1.0
+MAX_SIMUL_KEYS = 5
 
 # --- Chunked video preprocessing ---
 RAW_CHUNK_SIZE_GB = 5

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Preprocess raw chunked frames into per-run frame sequences.
+"""Preprocess individual raw-frame chunks into train/val/test-ready .npy files.
 
-Reads raw frame chunks produced by chunk_video.py, applies frame-level
-transforms and saves each run as a contiguous pair of .npy files (frames + labels).
-A per-frame train/val/test split mask is computed via
-iterative_train_test_split and stored alongside each run.
+Each chunk is processed independently: foreign keys are dropped, then a
+combined boolean keep-mask of transforms are computed and applied in one copy.  A per-chunk
+train/val/test split is computed via iterative_train_test_split on the chunk's
+own labels. Memory scales linearly with chunk size.
 """
 
 import argparse
@@ -23,6 +23,7 @@ from constants import (
     DUPE_EPSILON,
     KEY_ORDER,
     MASTER_FPS,
+    MAX_SIMUL_KEYS,
     PROCESSED_DATA_DIR,
     SEED,
     TEST_FRAC,
@@ -30,22 +31,30 @@ from constants import (
     VAL_FRAC,
 )
 from inverse_dynamics.transforms import (
-    RemoveAFK,
+    afk_mask,
+    clean_keys,
+    conflicting_mask,
+    edge_trim_mask,
+    foreign_keys_mask,
+    too_many_keys_mask,
 )
 
 _KEY_SET = set(KEY_ORDER)
+
+_CONFLICTING_PAIRS: list[tuple[int, int]] = [
+    (KEY_ORDER.index("w"), KEY_ORDER.index("s")),
+    (KEY_ORDER.index("a"), KEY_ORDER.index("d")),
+    (KEY_ORDER.index("up"), KEY_ORDER.index("down")),
+    (KEY_ORDER.index("left"), KEY_ORDER.index("right")),
+]
 
 _SPLIT_TRAIN = np.int8(1)
 _SPLIT_VAL = np.int8(2)
 _SPLIT_TEST = np.int8(3)
 
 # ---------------------------------------------------------------------------
-# Key helpers
+# Helpers
 # ---------------------------------------------------------------------------
-
-
-def _clean_keys(keys_list: list[list[str]]) -> list[list[str]]:
-    return [[k for k in frame_keys if k in _KEY_SET] for frame_keys in keys_list]
 
 
 def _keys_to_multilabel(
@@ -65,158 +74,58 @@ def _keys_to_multilabel(
     return labels
 
 
-# ---------------------------------------------------------------------------
-# Per-run processing
-# ---------------------------------------------------------------------------
-
-
-def _process_run(
-    chunk_dir: Path,
-    key_to_idx: dict[str, int],
-    trim_frac: float,
-    afk_max_same: int,
-) -> tuple[np.ndarray, np.ndarray, str] | None:
-    """Load all chunks for a run, concatenate, apply transforms, return (frames, labels, run_name)."""
-    meta_paths = sorted(chunk_dir.glob("chunk_*_meta.json"))
-    if not meta_paths:
-        return None
-
-    all_frames: list[np.ndarray] = []
-    all_labels: list[np.ndarray] = []
-    run_name: str | None = None
-    is_first: bool | None = None
-    is_last: bool | None = None
-
-    for meta_path in meta_paths:
-        chunk_id = int(meta_path.stem.rsplit("_", 1)[0].split("_", 1)[1])
-
-        frames_path = chunk_dir / f"chunk_{chunk_id:04d}_frames.npy"
-        keys_path = chunk_dir / f"chunk_{chunk_id:04d}_keys.json"
-
-        if not frames_path.exists():
-            continue
-
-        frames: np.ndarray = np.load(frames_path)
-
-        with open(keys_path) as f:
-            raw_keys: list[list[str]] = json.load(f)
-        with open(meta_path) as f:
-            meta: dict[str, Any] = json.load(f)
-
-        if run_name is None:
-            run_name = meta["run_name"]
-
-        cleaned = _clean_keys(raw_keys)
-        labels = _keys_to_multilabel(cleaned, key_to_idx)
-
-        # Track run edges
-        if meta.get("is_first"):
-            is_first = True
-        if meta.get("is_last"):
-            is_last = True
-
-        all_frames.append(frames)
-        all_labels.append(labels)
-
-    if not all_frames:
-        return None
-
-    frames_concat = np.concatenate(all_frames)
-    labels_concat = np.concatenate(all_labels)
-
-    # Trim edges
-    trim_n = int(len(frames_concat) * trim_frac)
-    if trim_n > 0:
-        if is_first and is_last:
-            frames_concat = frames_concat[trim_n:-trim_n]
-            labels_concat = labels_concat[trim_n:-trim_n]
-        elif is_first:
-            frames_concat = frames_concat[trim_n:]
-            labels_concat = labels_concat[trim_n:]
-        elif is_last:
-            frames_concat = frames_concat[:-trim_n]
-            labels_concat = labels_concat[:-trim_n]
-
-    # Remove AFK segments
-    afk_transform = RemoveAFK(max_same=afk_max_same, epsilon=DUPE_EPSILON)
-    frames_concat, labels_concat = afk_transform(frames_concat, labels_concat)
-
-    return frames_concat, labels_concat, run_name or "unknown"
-
-
-# ---------------------------------------------------------------------------
-# Split computation
-# ---------------------------------------------------------------------------
-
-
-def _compute_splits(
-    all_labels: list[np.ndarray],
+def _compute_chunk_split(
+    labels: np.ndarray,
     val_frac: float,
     test_frac: float,
     seed: int,
-) -> tuple[list[np.ndarray], dict[str, Any]]:
-    """Compute per-frame train/val/test split masks for all runs."""
-    total_frames = sum(len(labels) for labels in all_labels)
-    n_keys = all_labels[0].shape[1]
+) -> tuple[np.ndarray, dict[str, int]]:
+    """Compute per-chunk train/val/test split mask.
 
-    if total_frames == 0 or not all_labels or len(all_labels[0]) == 0:
-        empty_split: dict[str, Any] = {
-            "train_count": 0,
-            "val_count": 0,
-            "test_count": 0,
-            "pos_weight": [1.0] * n_keys,
-        }
-        split_masks = [np.empty(0, dtype=np.int8) for _ in all_labels]
-        return split_masks, empty_split
-
-    y_all = np.concatenate(all_labels)
-
-    total_pos = y_all.sum(axis=0).astype(np.float64)
-    total_neg = (total_frames - total_pos).astype(np.float64)
-    pos_weight = (total_neg / (total_pos + 1e-8)).tolist()
+    Falls back to all-train when the chunk is too small for meaningful splits.
+    """
+    n = len(labels)
+    if n < 3:
+        split = np.full(n, _SPLIT_TRAIN, dtype=np.int8)
+        counts = {"train": n, "val": 0, "test": 0}
+        return split, counts
 
     np.random.seed(seed)
+    x_idx = np.arange(n, dtype=np.int32).reshape(-1, 1)
+    y_int = labels.astype(np.int32)
 
-    x_idx = np.arange(total_frames, dtype=np.int32).reshape(-1, 1)
-    y_int = y_all.astype(np.int32)
+    test_size = max(2 / n, min(test_frac, (n - 2) / n))
 
     x_trainval, _, x_test, _ = iterative_train_test_split(
-        x_idx, y_int, test_size=test_frac
+        x_idx, y_int, test_size=test_size
     )
 
-    val_frac_in_remainder = val_frac / (1.0 - test_frac)
-    x_train, _, x_val, _ = iterative_train_test_split(
-        x_trainval,
-        y_int[x_trainval.flatten().astype(np.int32)],
-        test_size=val_frac_in_remainder,
-    )
+    n_trainval = len(x_trainval)
+    if n_trainval < 2:
+        train_arr = x_trainval.flatten().astype(np.int32)
+        val_arr = np.array([], dtype=np.int32)
+    else:
+        remainder_frac = 1.0 - test_size
+        val_size = max(
+            1 / n_trainval,
+            min(val_frac / remainder_frac, (n_trainval - 1) / n_trainval),
+        )
+        x_train, _, x_val, _ = iterative_train_test_split(
+            x_trainval,
+            y_int[x_trainval.flatten().astype(np.int32)],
+            test_size=val_size,
+        )
+        train_arr = x_train.flatten().astype(np.int32)
+        val_arr = x_val.flatten().astype(np.int32)
 
-    train_arr = x_train.flatten().astype(np.int32)
-    val_arr = x_val.flatten().astype(np.int32)
     test_arr = x_test.flatten().astype(np.int32)
 
-    partition = np.zeros(total_frames, dtype=np.int8)
-    partition[train_arr] = _SPLIT_TRAIN
-    partition[val_arr] = _SPLIT_VAL
-    partition[test_arr] = _SPLIT_TEST
+    split = np.full(n, _SPLIT_TRAIN, dtype=np.int8)
+    split[val_arr] = _SPLIT_VAL
+    split[test_arr] = _SPLIT_TEST
 
-    # Split partition back into per-run masks
-    split_masks: list[np.ndarray] = []
-    offset = 0
-    for labels in all_labels:
-        n = len(labels)
-        split_masks.append(partition[offset : offset + n])
-        offset += n
-
-    split_info: dict[str, Any] = {
-        "train_count": len(train_arr),
-        "val_count": len(val_arr),
-        "test_count": len(test_arr),
-        "pos_weight": pos_weight,
-    }
-
-    del y_all
-    return split_masks, split_info
+    counts = {"train": len(train_arr), "val": len(val_arr), "test": len(test_arr)}
+    return split, counts
 
 
 # ---------------------------------------------------------------------------
@@ -226,33 +135,48 @@ def _compute_splits(
 
 def _write_dataset_info(
     out_dir: Path,
-    run_meta: list[dict[str, Any]],
-    split_info: dict[str, Any],
+    chunk_meta: list[dict[str, Any]],
     key_names: list[str],
+    pos_weight: list[float],
     val_frac: float,
     test_frac: float,
     seed: int,
 ) -> None:
-    total_frames = sum(r["n_frames"] for r in run_meta)
-    total_original = sum(r["n_original_frames"] for r in run_meta)
-    total_removed_edges = sum(r["n_removed_edges"] for r in run_meta)
-    total_removed_afk = sum(r["n_removed_afk"] for r in run_meta)
+    total_frames = sum(c["n_frames"] for c in chunk_meta)
+    total_original = sum(c["n_original"] for c in chunk_meta)
+    total_train = sum(c["n_train"] for c in chunk_meta)
+    total_val = sum(c["n_val"] for c in chunk_meta)
+    total_test = sum(c["n_test"] for c in chunk_meta)
+    total_removed_foreign = sum(c["n_removed_foreign"] for c in chunk_meta)
+    total_removed_edges = sum(c["n_removed_edges"] for c in chunk_meta)
+    total_removed_conflicting = sum(c["n_removed_conflicting"] for c in chunk_meta)
+    total_removed_too_many = sum(c["n_removed_too_many_keys"] for c in chunk_meta)
+    total_removed_afk = sum(c["n_removed_afk"] for c in chunk_meta)
 
     dataset_info: dict[str, Any] = {
         "key_names": key_names,
-        "pos_weight": split_info["pos_weight"],
-        "train_count": split_info["train_count"],
-        "val_count": split_info["val_count"],
-        "test_count": split_info["test_count"],
+        "pos_weight": pos_weight,
+        "train_count": total_train,
+        "val_count": total_val,
+        "test_count": total_test,
         "total_frames": total_frames,
-        "n_runs_processed": len(run_meta),
+        "n_chunks_processed": len(chunk_meta),
         "val_frac": val_frac,
         "test_frac": test_frac,
         "seed": seed,
-        "frame_transforms": ["trim_edges", "remove_afk"],
+        "frame_transforms": [
+            "remove_foreign_keys",
+            "trim_edges",
+            "remove_conflicting_directions",
+            "remove_too_many_keys",
+            "remove_afk",
+        ],
         "aggregated_stats": {
             "total_original_frames": total_original,
+            "total_removed_foreign_keys": total_removed_foreign,
             "total_removed_edges": total_removed_edges,
+            "total_removed_conflicting": total_removed_conflicting,
+            "total_removed_too_many_keys": total_removed_too_many,
             "total_removed_afk": total_removed_afk,
         },
     }
@@ -270,13 +194,13 @@ def _write_dataset_info(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Preprocess chunked frames into per-run frame sequences"
+        description="Preprocess chunked frames into per-chunk .npy files"
     )
     parser.add_argument(
         "--chunks-dir",
         type=Path,
         default=DATA_CHUNKS_DIR,
-        help="Directory containing run_* subdirectories with chunked .npy files",
+        help="Root directory containing per-group subdirectories with chunked .npy files",
     )
     parser.add_argument(
         "--out-dir",
@@ -306,14 +230,15 @@ def main() -> None:
         "--trim-frac",
         type=float,
         default=TRIM_EDGE_FRAC,
-        help="Fraction to trim from run edges",
+        help="Fraction to trim from chunk edges",
     )
     parser.add_argument(
         "--afk-max-same",
         type=int,
         default=None,
         help="Max consecutive identical frames before AFK removal "
-        f"(default: {AFK_DURATION_SECONDS} * {MASTER_FPS} fps = {int(AFK_DURATION_SECONDS * MASTER_FPS)})",
+        f"(default: {AFK_DURATION_SECONDS} * {MASTER_FPS} fps = "
+        f"{int(AFK_DURATION_SECONDS * MASTER_FPS)})",
     )
     args = parser.parse_args()
 
@@ -321,17 +246,15 @@ def main() -> None:
     if not chunks_dir.is_dir():
         sys.exit(f"Not a directory: {chunks_dir}")
 
-    chunk_dirs = sorted(
-        d for d in chunks_dir.iterdir() if d.is_dir() and d.name.startswith("run_")
-    )
-    if not chunk_dirs:
-        sys.exit(f"No run_* subdirectories found in {chunks_dir}")
+    meta_paths = sorted(chunks_dir.rglob("chunk_*_meta.json"))
+    if not meta_paths:
+        sys.exit(f"No chunk_*_meta.json files found under {chunks_dir}")
 
     afk_max_same = args.afk_max_same
     if afk_max_same is None:
         afk_max_same = int(AFK_DURATION_SECONDS * MASTER_FPS)
 
-    print(f"Found {len(chunk_dirs)} chunked run(s) in {chunks_dir}")
+    print(f"Found {len(meta_paths)} chunk(s) under {chunks_dir}")
     print(f"AFK max same: {afk_max_same} consecutive frames")
     print(f"Trim frac: {args.trim_frac}")
     print()
@@ -344,63 +267,119 @@ def main() -> None:
     with open(args.out_dir / "key_order.json", "w") as f:
         json.dump({"keys": key_names}, f, indent=2)
 
-    # Phase 1: Process each run
-    all_labels: list[np.ndarray] = []
-    run_meta: list[dict[str, Any]] = []
+    chunk_meta: list[dict[str, Any]] = []
+    total_frames_final = 0
+    total_pos = np.zeros(len(key_names), dtype=np.float64)
 
-    for run_idx, chunk_dir in enumerate(
-        tqdm(chunk_dirs, desc="Processing runs", unit="run")
+    for chunk_idx, meta_path in enumerate(
+        tqdm(meta_paths, desc="Processing chunks", unit="chunk")
     ):
-        result = _process_run(chunk_dir, key_to_idx, args.trim_frac, afk_max_same)
-        if result is None:
+        chunk_dir = meta_path.parent
+        group_name = chunk_dir.name
+
+        chunk_id = int(meta_path.stem.rsplit("_", 1)[0].split("_", 1)[1])
+        frames_path = chunk_dir / f"chunk_{chunk_id:04d}_frames.npy"
+        keys_path = chunk_dir / f"chunk_{chunk_id:04d}_keys.json"
+
+        if not frames_path.exists():
             continue
 
-        frames, labels, run_name = result
+        frames: np.ndarray = np.load(frames_path)
 
-        # Save run data
-        run_id = f"run_{run_idx:04d}"
-        np.save(args.out_dir / f"{run_id}_frames.npy", frames)
-        np.save(args.out_dir / f"{run_id}_labels.npy", labels)
+        with open(keys_path) as f:
+            raw_keys: list[list[str]] = json.load(f)
+        with open(meta_path) as f:
+            meta: dict[str, Any] = json.load(f)
 
-        all_labels.append(labels)
-        run_meta.append(
+        n_original = len(frames)
+
+        # --- Mask 1: foreign keys ---
+        foreign = foreign_keys_mask(raw_keys, _KEY_SET)
+        n_removed_foreign = int(foreign.sum())
+
+        # --- Mask 2: edge trim ---
+        trim = edge_trim_mask(
+            n_original,
+            meta.get("is_first", False),
+            meta.get("is_last", False),
+            args.trim_frac,
+        )
+        n_removed_edges = int((~trim).sum())
+
+        # --- Build labels from cleaned keys ---
+        cleaned = clean_keys(raw_keys, _KEY_SET)
+        labels = _keys_to_multilabel(cleaned, key_to_idx)
+
+        # --- Mask 3: conflicting directions ---
+        conflict = conflicting_mask(labels, _CONFLICTING_PAIRS)
+        n_removed_conflicting = int((~conflict).sum())
+
+        # --- Mask 4: too many simultaneous keys ---
+        too_many = too_many_keys_mask(labels, MAX_SIMUL_KEYS)
+        n_removed_too_many = int((~too_many).sum())
+
+        # --- Mask 5: AFK detection ---
+        afk = afk_mask(frames, afk_max_same, DUPE_EPSILON)
+        n_removed_afk = int((~afk).sum())
+
+        # --- Combine masks ---
+        combined = ~foreign & trim & conflict & too_many & afk
+
+        frames = frames[combined]
+        labels = labels[combined]
+        n_final = len(frames)
+
+        # --- Per-chunk split ---
+        chunk_seed = args.seed + chunk_idx
+        split, split_counts = _compute_chunk_split(
+            labels, args.val_frac, args.test_frac, chunk_seed
+        )
+
+        # --- Save ---
+        out_stem = f"{group_name}_chunk_{chunk_id:04d}"
+        np.save(args.out_dir / f"{out_stem}_frames.npy", frames)
+        np.save(args.out_dir / f"{out_stem}_labels.npy", labels)
+        np.save(args.out_dir / f"{out_stem}_split.npy", split)
+
+        total_frames_final += n_final
+        total_pos += labels.sum(axis=0).astype(np.float64)
+
+        chunk_meta.append(
             {
-                "run_id": run_id,
-                "run_name": run_name,
-                "n_frames": len(frames),
-                "n_original_frames": len(frames),
-                "n_removed_edges": 0,
-                "n_removed_afk": 0,
+                "stem": out_stem,
+                "group_name": group_name,
+                "chunk_id": chunk_id,
+                "n_original": n_original,
+                "n_frames": n_final,
+                "n_train": split_counts["train"],
+                "n_val": split_counts["val"],
+                "n_test": split_counts["test"],
+                "n_removed_foreign": n_removed_foreign,
+                "n_removed_edges": n_removed_edges,
+                "n_removed_conflicting": n_removed_conflicting,
+                "n_removed_too_many_keys": n_removed_too_many,
+                "n_removed_afk": n_removed_afk,
             }
         )
 
-    if not all_labels:
-        sys.exit("No frames processed. Check input data.")
+    if not chunk_meta:
+        sys.exit("No chunks processed. Check input data.")
 
-    total_frames = sum(len(labels) for labels in all_labels)
-    print(f"\nProcessed {len(all_labels)} runs, {total_frames:,} total frames")
+    total_train = sum(c["n_train"] for c in chunk_meta)
+    total_val = sum(c["n_val"] for c in chunk_meta)
+    total_test = sum(c["n_test"] for c in chunk_meta)
 
-    # Phase 2: Compute splits
-    print("\nComputing train/val/test split...")
-    split_masks, split_info = _compute_splits(
-        all_labels, args.val_frac, args.test_frac, args.seed
-    )
+    total_neg = total_frames_final - total_pos
+    pos_weight = (total_neg / (total_pos + 1e-8)).tolist()
 
-    for run_idx, split_mask in enumerate(split_masks):
-        run_id = f"run_{run_idx:04d}"
-        np.save(args.out_dir / f"{run_id}_split.npy", split_mask)
-
-    print(
-        f"  Split: train={split_info['train_count']:,}"
-        f"  val={split_info['val_count']:,}"
-        f"  test={split_info['test_count']:,}"
-    )
+    print(f"\nProcessed {len(chunk_meta)} chunks, {total_frames_final:,} total frames")
+    print(f"  Train: {total_train:,}  Val: {total_val:,}  Test: {total_test:,}")
 
     _write_dataset_info(
         args.out_dir,
-        run_meta,
-        split_info,
+        chunk_meta,
         key_names,
+        pos_weight,
         args.val_frac,
         args.test_frac,
         args.seed,
