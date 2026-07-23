@@ -51,7 +51,7 @@ KEY_ORDER = [
     "tab",
     "ctrl",
 ]
-WINDOW_SIZE = 4
+WINDOW_SIZE = 9
 STRIDE = 2
 ZOOM = 2  # integer scale factor per frame
 FRAME_W = 320

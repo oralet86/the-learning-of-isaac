@@ -29,6 +29,7 @@ from constants import (
     EPOCHS,
     INVERSE_DYNAMIC_RUNS_DIR,
     LR,
+    LR_SCHEDULE_FACTOR,
     NUM_WORKERS,
     PATIENCE,
     PLATEAU_PATIENCE,
@@ -100,6 +101,8 @@ def train_epoch(
             loss: Tensor = train_step(x, y)
 
         scaler.scale(outputs=loss).backward()
+        scaler.unscale_(optimizer)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         scaler.step(optimizer)
         scaler.update()
 
@@ -269,9 +272,8 @@ def main() -> None:
     window_size = (
         args.window_size if args.window_size is not None else model_config.window_size
     )
-    label_index_default = (window_size - 1) // 2
     label_index = (
-        args.label_index if args.label_index is not None else label_index_default
+        args.label_index if args.label_index is not None else model_config.label_index
     )
     stride = args.stride if args.stride is not None else model_config.stride
 
@@ -294,7 +296,6 @@ def main() -> None:
     pos_weight = torch.as_tensor(ds_info["pos_weight"], dtype=torch.float32)
 
     data_frac = ABLATION_DATA_FRAC if args.mode == "ablation" else 1.0
-    effective_lr = LR * data_frac
 
     train_ds = WindowedDataset(
         processed_dir=PROCESSED_DATA_DIR,
@@ -381,13 +382,13 @@ def main() -> None:
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
-        lr=effective_lr,
+        lr=LR,
         weight_decay=model_config.weight_decay,
         fused=True,
     )
 
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, patience=PLATEAU_PATIENCE
+        optimizer, patience=PLATEAU_PATIENCE, factor=LR_SCHEDULE_FACTOR
     )
     scaler = GradScaler(device="cuda")
 
@@ -569,7 +570,7 @@ def main() -> None:
             "mode": args.mode,
             "batch_size": model_config.batch_size,
             "epochs": len(history["train_loss"]),
-            "lr": effective_lr,
+            "lr": LR,
             "dropout": model_config.dropout,
             "weight_decay": model_config.weight_decay,
             "patience": PATIENCE,
