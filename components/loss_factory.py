@@ -168,7 +168,7 @@ class GroupedKeyLoss(LossCriterion):
         probs[:, _SIGMOID_START:_SIGMOID_END] = torch.sigmoid(logits[:, :NUM_SIGMOID])
 
         group_logits = logits[:, NUM_SIGMOID:].view(bs, NUM_SOFTMAX, 3)
-        group_probs = F.softmax(group_logits, dim=-1)
+        group_probs = F.softmax(group_logits, dim=-1).to(dtype=dtype)
 
         probs[:, self._k1_indices] = group_probs[:, :, 0]
         probs[:, self._k2_indices] = group_probs[:, :, 2]

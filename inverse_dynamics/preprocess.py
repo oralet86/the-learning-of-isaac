@@ -35,6 +35,7 @@ from inverse_dynamics.transforms import (
     clean_keys,
     conflicting_mask,
     edge_trim_mask,
+    empty_frames_mask,
     foreign_keys_mask,
     too_many_keys_mask,
 )
@@ -46,6 +47,15 @@ _CONFLICTING_PAIRS: list[tuple[int, int]] = [
     (KEY_ORDER.index("a"), KEY_ORDER.index("d")),
     (KEY_ORDER.index("up"), KEY_ORDER.index("down")),
     (KEY_ORDER.index("left"), KEY_ORDER.index("right")),
+]
+
+_TRANSFORMS: list[Any] = [
+    foreign_keys_mask,
+    edge_trim_mask,
+    conflicting_mask,
+    too_many_keys_mask,
+    afk_mask,
+    empty_frames_mask,
 ]
 
 _SPLIT_TRAIN = np.int8(1)
@@ -141,6 +151,7 @@ def _write_dataset_info(
     val_frac: float,
     test_frac: float,
     seed: int,
+    transform_fns: list[Any],
 ) -> None:
     total_frames = sum(c["n_frames"] for c in chunk_meta)
     total_original = sum(c["n_original"] for c in chunk_meta)
@@ -152,6 +163,7 @@ def _write_dataset_info(
     total_removed_conflicting = sum(c["n_removed_conflicting"] for c in chunk_meta)
     total_removed_too_many = sum(c["n_removed_too_many_keys"] for c in chunk_meta)
     total_removed_afk = sum(c["n_removed_afk"] for c in chunk_meta)
+    total_removed_empty = sum(c["n_removed_empty"] for c in chunk_meta)
 
     dataset_info: dict[str, Any] = {
         "key_names": key_names,
@@ -164,13 +176,7 @@ def _write_dataset_info(
         "val_frac": val_frac,
         "test_frac": test_frac,
         "seed": seed,
-        "frame_transforms": [
-            "remove_foreign_keys",
-            "trim_edges",
-            "remove_conflicting_directions",
-            "remove_too_many_keys",
-            "remove_afk",
-        ],
+        "frame_transforms": [fn.__name__ for fn in transform_fns],
         "aggregated_stats": {
             "total_original_frames": total_original,
             "total_removed_foreign_keys": total_removed_foreign,
@@ -178,6 +184,7 @@ def _write_dataset_info(
             "total_removed_conflicting": total_removed_conflicting,
             "total_removed_too_many_keys": total_removed_too_many,
             "total_removed_afk": total_removed_afk,
+            "total_removed_empty_frames": total_removed_empty,
         },
     }
 
@@ -292,41 +299,51 @@ def main() -> None:
             meta: dict[str, Any] = json.load(f)
 
         n_original = len(frames)
+        total_run_frames = meta.get("total_run_frames", n_original)
 
-        # --- Mask 1: foreign keys ---
+        # --- Build keep-masks (all True = keep) ---
         foreign = foreign_keys_mask(raw_keys, _KEY_SET)
-        n_removed_foreign = int(foreign.sum())
 
-        # --- Mask 2: edge trim ---
         trim = edge_trim_mask(
             n_original,
+            total_run_frames,
             meta.get("is_first", False),
             meta.get("is_last", False),
             args.trim_frac,
         )
-        n_removed_edges = int((~trim).sum())
 
         # --- Build labels from cleaned keys ---
         cleaned = clean_keys(raw_keys, _KEY_SET)
         labels = _keys_to_multilabel(cleaned, key_to_idx)
 
-        # --- Mask 3: conflicting directions ---
         conflict = conflicting_mask(labels, _CONFLICTING_PAIRS)
-        n_removed_conflicting = int((~conflict).sum())
-
-        # --- Mask 4: too many simultaneous keys ---
         too_many = too_many_keys_mask(labels, MAX_SIMUL_KEYS)
-        n_removed_too_many = int((~too_many).sum())
-
-        # --- Mask 5: AFK detection ---
         afk = afk_mask(frames, afk_max_same, DUPE_EPSILON)
-        n_removed_afk = int((~afk).sum())
+        empty = empty_frames_mask(labels)
 
-        # --- Combine masks ---
-        combined = ~foreign & trim & conflict & too_many & afk
+        # --- Combine masks sequentially for marginal removal counts ---
+        running = np.ones(n_original, dtype=bool)
 
-        frames = frames[combined]
-        labels = labels[combined]
+        n_removed_foreign = int((running & ~foreign).sum())
+        running &= foreign
+
+        n_removed_edges = int((running & ~trim).sum())
+        running &= trim
+
+        n_removed_conflicting = int((running & ~conflict).sum())
+        running &= conflict
+
+        n_removed_too_many = int((running & ~too_many).sum())
+        running &= too_many
+
+        n_removed_afk = int((running & ~afk).sum())
+        running &= afk
+
+        n_removed_empty = int((running & ~empty).sum())
+        running &= empty
+
+        frames = frames[running]
+        labels = labels[running]
         n_final = len(frames)
 
         # --- Per-chunk split ---
@@ -359,6 +376,7 @@ def main() -> None:
                 "n_removed_conflicting": n_removed_conflicting,
                 "n_removed_too_many_keys": n_removed_too_many,
                 "n_removed_afk": n_removed_afk,
+                "n_removed_empty": n_removed_empty,
             }
         )
 
@@ -383,6 +401,7 @@ def main() -> None:
         args.val_frac,
         args.test_frac,
         args.seed,
+        _TRANSFORMS,
     )
 
     print(f"\nDone. Output: {args.out_dir.resolve()}/")

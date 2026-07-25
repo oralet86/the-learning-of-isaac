@@ -1,146 +1,13 @@
-"""Transforms applied during preprocessing.
+"""Mask functions used during preprocessing.
 
-FrameTransform operates on (frames, labels) before storage; it may change
-the sequence length (trimming edges, AFK removal, cleaning conflicting
-directions, and removing frames with too many simultaneous key presses).
-
-Also provides mask-returning variants that produce boolean keep-masks
-without copying frame data, so multiple transforms can be combined and
-applied in a single pass.
+Each function returns a boolean keep-mask (``True`` = keep the frame,
+``False`` = drop it).  Multiple masks can be combined via ``&`` and
+applied in a single pass to avoid repeated copies.
 """
-
-from typing import Protocol, runtime_checkable
 
 import numpy as np
 
 AFK_SLICE_SIZE = 5000
-
-
-@runtime_checkable
-class FrameTransform(Protocol):
-    """Transform that filters or mutates the raw frame sequence.
-
-    Receives (frames, labels) and returns the potentially shorter sequence.
-    """
-
-    name: str
-
-    def __call__(
-        self, frames: np.ndarray, labels: np.ndarray
-    ) -> tuple[np.ndarray, np.ndarray]: ...
-
-
-class TrimEdges:
-    """Trim a fraction of frames from the start and/or end of a run.
-
-    Runs captured via OBS start and stop cleanly, but keeping a small trim
-    margin defends against UI flicker during start/stop.
-    """
-
-    name: str = "trim_edges"
-
-    def __init__(self, frac: float = 0.01, side: str = "both") -> None:
-        self.frac = frac
-        self.side = side
-
-    def __call__(
-        self, frames: np.ndarray, labels: np.ndarray
-    ) -> tuple[np.ndarray, np.ndarray]:
-        n = len(frames)
-        trim_n = int(n * self.frac)
-        if trim_n == 0:
-            return frames, labels
-        if self.side == "start":
-            return frames[trim_n:], labels[trim_n:]
-        if self.side == "end":
-            return frames[:-trim_n], labels[:-trim_n]
-        return frames[trim_n:-trim_n], labels[trim_n:-trim_n]
-
-
-class RemoveAFK:
-    """Remove runs of near-identical frames longer than *max_same*.
-
-    Keeps the first frame of each run; subsequent identical frames are dropped.
-    Intended to strip idle / AFK segments where nothing changes on screen.
-    """
-
-    name: str = "remove_afk"
-
-    def __init__(self, max_same: int = 240, epsilon: float = 1.0) -> None:
-        self.max_same = max_same
-        self.epsilon = epsilon
-
-    def __call__(
-        self, frames: np.ndarray, labels: np.ndarray
-    ) -> tuple[np.ndarray, np.ndarray]:
-        n = len(frames)
-        if n <= 1 or self.max_same <= 0:
-            return frames, labels
-
-        diffs = np.mean(
-            np.abs(frames[1:].astype(np.int16) - frames[:-1].astype(np.int16)),
-            axis=(1, 2),
-        )
-        boundaries = np.where(diffs > self.epsilon)[0]
-        boundaries = np.concatenate([[0], boundaries + 1, [n]])
-
-        keep_mask = np.ones(n, dtype=bool)
-        run_lengths = np.diff(boundaries)
-        long_runs = np.where(run_lengths > self.max_same)[0]
-        for idx in long_runs:
-            r_start = int(boundaries[idx]) + 1
-            r_end = int(boundaries[idx + 1])
-            keep_mask[r_start:r_end] = False
-
-        return frames[keep_mask], labels[keep_mask]
-
-
-class RemoveConflictingDirections:
-    """Drop frames where mutually exclusive direction keys are simultaneously active.
-
-    Mutually exclusive groups:
-      - WASD movement: w/s, a/d
-      - Arrow shooting: up/down, left/right
-
-    Frames with both keys in any pair set are removed.
-    """
-
-    name: str = "remove_conflicting_directions"
-
-    def __init__(self, conflicting_pairs: list[tuple[int, int]]) -> None:
-        self.conflicting_pairs = conflicting_pairs
-
-    def __call__(
-        self, frames: np.ndarray, labels: np.ndarray
-    ) -> tuple[np.ndarray, np.ndarray]:
-        mask = np.ones(len(labels), dtype=bool)
-        for i, j in self.conflicting_pairs:
-            mask &= ~((labels[:, i] == 1) & (labels[:, j] == 1))
-        return frames[mask], labels[mask]
-
-
-class RemoveTooManyKeys:
-    """Drop frames where more than *max_simul* keys are simultaneously active.
-
-    Intended to catch rare timing artifacts where key events from adjacent
-    frames bleed together due to OBS frame capture jitter.
-    """
-
-    name: str = "remove_too_many_keys"
-
-    def __init__(self, max_simul: int) -> None:
-        self.max_simul = max_simul
-
-    def __call__(
-        self, frames: np.ndarray, labels: np.ndarray
-    ) -> tuple[np.ndarray, np.ndarray]:
-        mask = labels.sum(axis=1) <= self.max_simul
-        return frames[mask], labels[mask]
-
-
-# ---------------------------------------------------------------------------
-# Mask-returning transform functions
-# ---------------------------------------------------------------------------
 
 
 def conflicting_mask(
@@ -161,6 +28,11 @@ def conflicting_mask(
 def too_many_keys_mask(labels: np.ndarray, max_simul: int) -> np.ndarray:
     """Return boolean keep-mask for frames with at most *max_simul* active keys."""
     return labels.sum(axis=1) <= max_simul
+
+
+def empty_frames_mask(labels: np.ndarray) -> np.ndarray:
+    """Return boolean keep-mask for frames where at least one key is pressed."""
+    return labels.sum(axis=1) > 0
 
 
 def afk_mask(
@@ -205,13 +77,19 @@ def afk_mask(
 
 def edge_trim_mask(
     n: int,
+    total_n: int,
     is_first: bool,
     is_last: bool,
     trim_frac: float,
 ) -> np.ndarray:
-    """Return boolean keep-mask trimming *trim_frac* from chunk edges."""
+    """Return boolean keep-mask trimming *trim_frac* from global recording edges.
+
+    The trim amount is computed from *total_n* (total recording frames) so the
+    effective percentage is consistent regardless of chunking.  Only chunks at
+    the global edges (*is_first* or *is_last*) are trimmed.
+    """
     mask = np.ones(n, dtype=bool)
-    trim_n = int(n * trim_frac)
+    trim_n = int(total_n * trim_frac)
     if trim_n <= 0:
         return mask
     if is_first:
@@ -225,14 +103,14 @@ def foreign_keys_mask(
     keys_list: list[list[str]],
     key_set: set[str],
 ) -> np.ndarray:
-    """Return boolean mask that is ``True`` for frames with keys outside *key_set*.
+    """Return boolean keep-mask for frames whose keys all belong to *key_set*.
 
-    The returned mask marks frames to *drop* — it is ``True`` for foreign.
+    Frames containing any key not in *key_set* get ``False``.
     """
-    mask = np.zeros(len(keys_list), dtype=bool)
+    mask = np.ones(len(keys_list), dtype=bool)
     for i, frame_keys in enumerate(keys_list):
         if any(k not in key_set for k in frame_keys):
-            mask[i] = True
+            mask[i] = False
     return mask
 
 

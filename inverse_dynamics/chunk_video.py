@@ -253,20 +253,23 @@ def chunk_run(
         raise
 
     total_chunks = chunk_id
-    _patch_chunk_totals(run_chunk_dir, total_chunks)
+    _patch_chunk_totals(run_chunk_dir, total_chunks, total_frames_decoded)
 
     print(f"  {name}: {total_frames_decoded:,} frames → {total_chunks} chunk(s)")
     return True
 
 
-def _patch_chunk_totals(chunk_dir: Path, total_chunks: int) -> None:
-    """Update the ``total_chunks`` and ``is_last`` fields in all chunk metadata."""
+def _patch_chunk_totals(
+    chunk_dir: Path, total_chunks: int, total_run_frames: int
+) -> None:
+    """Update ``total_chunks``, ``is_last``, and ``total_run_frames`` in all chunk metadata."""
     for meta_path in sorted(chunk_dir.glob("chunk_*_meta.json")):
         with open(meta_path) as f:
             meta: dict = json.load(f)
         chunk_id = meta["chunk_id"]
         meta["total_chunks"] = total_chunks
         meta["is_last"] = chunk_id == total_chunks - 1
+        meta["total_run_frames"] = total_run_frames
         with open(meta_path, "w") as f:
             json.dump(meta, f, indent=2)
 
