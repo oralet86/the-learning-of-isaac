@@ -30,7 +30,7 @@ from obsws_python.error import OBSSDKError
 from pynput import keyboard
 
 from constants import MASTER_FPS, RUNS_DIR
-from post_sync import sync_run
+from scripts.post_sync import sync_run
 
 # ---------------------------------------------------------------------------
 # Constants
