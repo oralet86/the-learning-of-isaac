@@ -51,7 +51,7 @@ def log_error(msg: str) -> None:
 
 def make_download_opts(folder_slug: str) -> dict[str, Any]:
     return {
-        "format": "bestvideo[height<=360][fps<=20]/bestvideo[height<=360]/best[height<=360]",
+        "format": "bestvideo[height<=720][fps<=30]/bestvideo[height<=720]/best[height<=720]",
         "format_sort": ["codec:av1:av01", "codec:vp9.2", "vcodec:vp9", "vcodec:h264"],
         "outtmpl": f"{DOWNLOAD_DIR}/{folder_slug}/%(title).100s.%(ext)s",
         "ignoreerrors": False,
