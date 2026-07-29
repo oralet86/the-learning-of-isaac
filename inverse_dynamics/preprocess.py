@@ -21,6 +21,7 @@ from constants import (
     AFK_DURATION_SECONDS,
     DATA_CHUNKS_DIR,
     DUPE_EPSILON,
+    FRAME_CROP_FRAC,
     KEY_ORDER,
     MASTER_FPS,
     MAX_SIMUL_KEYS,
@@ -32,6 +33,7 @@ from constants import (
 )
 from inverse_dynamics.transforms import (
     afk_mask,
+    center_crop_frames,
     clean_keys,
     conflicting_mask,
     edge_trim_mask,
@@ -176,6 +178,7 @@ def _write_dataset_info(
         "val_frac": val_frac,
         "test_frac": test_frac,
         "seed": seed,
+        "crop_frac": FRAME_CROP_FRAC,
         "frame_transforms": [fn.__name__ for fn in transform_fns],
         "aggregated_stats": {
             "total_original_frames": total_original,
@@ -286,12 +289,14 @@ def main() -> None:
 
         chunk_id = int(meta_path.stem.rsplit("_", 1)[0].split("_", 1)[1])
         frames_path = chunk_dir / f"chunk_{chunk_id:04d}_frames.npy"
+        hud_path = chunk_dir / f"chunk_{chunk_id:04d}_hud.npy"
         keys_path = chunk_dir / f"chunk_{chunk_id:04d}_keys.json"
 
-        if not frames_path.exists():
+        if not frames_path.exists() or not hud_path.exists():
             continue
 
         frames: np.ndarray = np.load(frames_path)
+        hud: np.ndarray = np.load(hud_path)
 
         with open(keys_path) as f:
             raw_keys: list[list[str]] = json.load(f)
@@ -344,6 +349,8 @@ def main() -> None:
 
         frames = frames[running]
         labels = labels[running]
+        hud = hud[running]
+        frames = center_crop_frames(frames, FRAME_CROP_FRAC)
         n_final = len(frames)
 
         # --- Per-chunk split ---
@@ -355,6 +362,7 @@ def main() -> None:
         # --- Save ---
         out_stem = f"{group_name}_chunk_{chunk_id:04d}"
         np.save(args.out_dir / f"{out_stem}_frames.npy", frames)
+        np.save(args.out_dir / f"{out_stem}_hud.npy", hud)
         np.save(args.out_dir / f"{out_stem}_labels.npy", labels)
         np.save(args.out_dir / f"{out_stem}_split.npy", split)
 

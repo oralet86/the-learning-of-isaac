@@ -8,6 +8,10 @@ TARGET_WIDTH = 320
 TARGET_HEIGHT = 180
 TARGET_SIZE: tuple[int, int] = (TARGET_WIDTH, TARGET_HEIGHT)
 
+# Fraction of width/height kept by the center crop applied to training frames,
+# to exclude the non-gameplay HUD border.
+FRAME_CROP_FRAC = 0.75
+
 # Duration threshold for AFK detection (idle frames removed).
 AFK_DURATION_SECONDS = 3.0
 
@@ -69,6 +73,18 @@ MAX_SIMUL_KEYS = 5
 # --- Chunked video preprocessing ---
 RAW_CHUNK_SIZE_GB = 5
 DECODE_BATCH_SIZE = 1000
+
+# Number of raw RGB frames batched per TorchHudExtractor.extract_batch() call
+# during chunk_video.py's HUD decode pass.
+HUD_OCR_BATCH_SIZE = 128
+
+# Number of run_* directories processed concurrently by chunk_video.py's
+# ThreadPoolExecutor. GPU HUD extraction is bounded to one batch at a
+# time regardless of worker count (see the shared lock in _HudBatcher),
+# so the real ceiling here is CPU/RAM: each worker holds ~RAW_CHUNK_SIZE_GB
+# of grayscale frames plus a transient RGB batch buffer, and spawns 2
+# ffmpeg subprocesses.
+CHUNK_VIDEO_WORKERS = 8
 
 EPOCHS = 100
 LR = 3e-3

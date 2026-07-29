@@ -120,3 +120,23 @@ def clean_keys(
 ) -> list[list[str]]:
     """Keep only keys that belong to *key_set*, per frame."""
     return [[k for k in frame_keys if k in key_set] for frame_keys in keys_list]
+
+
+def center_crop_frames(frames: np.ndarray, crop_frac: float) -> np.ndarray:
+    """Center-crop a frame array to *crop_frac* of its width and height.
+
+    Args:
+        frames: ``(N, H, W)`` array (any dtype).
+        crop_frac: Fraction of width/height to keep, in ``(0, 1]``.
+
+    Returns:
+        ``(N, crop_h, crop_w)`` array, where ``crop_h = int(H * crop_frac)``
+        and ``crop_w = int(W * crop_frac)``, centered via floor-division
+        offsets.
+    """
+    _, h, w = frames.shape
+    crop_h = int(h * crop_frac)
+    crop_w = int(w * crop_frac)
+    y0 = (h - crop_h) // 2
+    x0 = (w - crop_w) // 2
+    return frames[:, y0 : y0 + crop_h, x0 : x0 + crop_w]

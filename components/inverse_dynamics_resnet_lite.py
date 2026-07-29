@@ -5,6 +5,7 @@ from typing import override
 import torch
 import torch.nn as nn
 
+from components.hud_diff import HudDiff
 from components.inverse_dynamics_model import InverseDynamicsModel, ModelConfig
 from components.signed_diff import SignedDiff
 
@@ -62,20 +63,20 @@ class InverseDynamicsResNetLite(
 ):
     """Lightweight ResNet for inverse dynamics key prediction.
 
-    Compared to the full ``InverseDynamicsResNet``, this variant uses:
-    - One residual block per stage (instead of two)
-    - Standard power-of-2 channel scaling (16→32→64→128→256)
-    - A 3×3 stem convolution (instead of 7×7)
+    Uses one residual block per stage, standard power-of-2 channel
+    scaling (16→32→64→128→256), and a 3×3 stem convolution.
     """
 
     def __init__(
         self,
         window_size: int = 2,
         num_keys: int = 13,
+        hud_dim: int = 0,
         dropout: float = _DROPOUT,
     ) -> None:
         super().__init__()
         self.signed_diff = SignedDiff()
+        self.hud_diff = HudDiff()
         self.conv1 = nn.Conv2d(window_size, 16, 3, stride=2, padding=1, bias=False)
         self.bn1 = nn.BatchNorm2d(16)
         self.maxpool = nn.MaxPool2d(3, stride=2, padding=1)
@@ -88,7 +89,7 @@ class InverseDynamicsResNetLite(
         self.avgpool = nn.AdaptiveAvgPool2d(1)
         self.relu = nn.ReLU(inplace=True)
         self.dropout = nn.Dropout(dropout)
-        self.fc = nn.Linear(256, num_keys)
+        self.fc = nn.Linear(256 + hud_dim * 2, num_keys)
 
         self._init_weights()
 
@@ -104,7 +105,7 @@ class InverseDynamicsResNetLite(
                 nn.init.constant_(m.bias, 0)
 
     @override
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, hud: torch.Tensor) -> torch.Tensor:
         x = self.signed_diff(x)
         x = self.relu(self.bn1(self.conv1(x)))
         x = self.maxpool(x)
@@ -115,6 +116,8 @@ class InverseDynamicsResNetLite(
         x = self.avgpool(x)
         x = torch.flatten(x, 1)
         x = self.dropout(x)
+        hud = self.hud_diff(hud)
+        x = torch.cat([x, torch.flatten(hud, 1)], dim=1)
         return self.fc(x)
 
     @classmethod

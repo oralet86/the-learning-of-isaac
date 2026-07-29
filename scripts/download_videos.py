@@ -1,7 +1,9 @@
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
 import random
 import re
 import sys
+import threading
 import time
 from typing import Any
 
@@ -10,7 +12,12 @@ import yt_dlp
 
 from constants import DOWNLOAD_DIR
 
-RATE_LIMIT = int(os.environ.get("RATE_LIMIT", str(4 * 1024 * 1024)))
+MAX_WORKERS = 8
+
+# This network blackholes native IPv6 to YouTube (see zapret's own
+# DISABLE_IPV6 config), so binding to an IPv4 source address is required —
+# otherwise yt-dlp's urllib backend hangs trying every IPv6 address first.
+FORCE_IPV4_SOURCE_ADDRESS = "0.0.0.0"
 
 PLAYLISTS_FILE = "playlists.txt"
 DOWNLOAD_DIR_STR = str(DOWNLOAD_DIR)
@@ -43,15 +50,18 @@ def sanitize_name(name: str, max_len: int = 80) -> str:
     return name or "Unknown"
 
 
+_log_lock = threading.Lock()
+
+
 def log_error(msg: str) -> None:
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-    with open(FAILED_LOG, "a") as f:
+    with _log_lock, open(FAILED_LOG, "a") as f:
         f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')}  {msg}\n")
 
 
 def make_download_opts(folder_slug: str) -> dict[str, Any]:
     return {
-        "format": "bestvideo[height<=720][fps<=30]/bestvideo[height<=720]/best[height<=720]",
+        "format": "bestvideo[height<=720][fps<=30]/bestvideo[height<=720]",
         "format_sort": ["codec:av1:av01", "codec:vp9.2", "vcodec:vp9", "vcodec:h264"],
         "outtmpl": f"{DOWNLOAD_DIR}/{folder_slug}/%(title).100s.%(ext)s",
         "ignoreerrors": False,
@@ -61,9 +71,9 @@ def make_download_opts(folder_slug: str) -> dict[str, Any]:
         "retries": 3,
         "fragment_retries": 3,
         "sleep_interval_requests": 2,
-        "ratelimit": RATE_LIMIT,
         "download_archive": ARCHIVE_FILE,
         "noplaylist": True,
+        "source_address": FORCE_IPV4_SOURCE_ADDRESS,
     }
 
 
@@ -72,6 +82,7 @@ def extract_playlist(url: str) -> tuple[str, list[dict[str, Any]]]:
         "extract_flat": "in_playlist",
         "quiet": True,
         "ignoreerrors": True,
+        "source_address": FORCE_IPV4_SOURCE_ADDRESS,
     }
     with yt_dlp.YoutubeDL(opts) as ydl:  # pyright: ignore[reportArgumentType]
         info = ydl.extract_info(url, download=False)
@@ -91,7 +102,12 @@ def extract_playlist(url: str) -> tuple[str, list[dict[str, Any]]]:
     return title, entries  # pyright: ignore[reportReturnType]
 
 
-def download_one(video_url: str, folder_slug: str) -> bool:
+def download_one(
+    video_url: str, folder_slug: str, jitter_range: tuple[float, float] = (1.5, 3.5)
+) -> bool:
+    """Download a single video, jittering the start so parallel workers don't
+    all hit YouTube in lockstep."""
+    time.sleep(random.uniform(*jitter_range))
     opts = make_download_opts(folder_slug)
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:  # pyright: ignore[reportArgumentType]
@@ -132,21 +148,30 @@ def main() -> None:
         failures: list[tuple[str, str, str]] = []
         desc = folder[:25].ljust(25)
 
-        for entry in tqdm(
-            entries, desc=desc, unit="vid", leave=False, dynamic_ncols=True
+        with (
+            tqdm(
+                total=len(entries),
+                desc=desc,
+                unit="vid",
+                leave=False,
+                dynamic_ncols=True,
+            ) as pbar,
+            ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor,
         ):
-            video_id = entry["id"]
-            video_url = (
-                entry.get("url") or f"https://www.youtube.com/watch?v={video_id}"
-            )
-            video_title = entry.get("title", video_id)
+            futures = {}
+            for entry in entries:
+                video_id = entry["id"]
+                video_url = (
+                    entry.get("url") or f"https://www.youtube.com/watch?v={video_id}"
+                )
+                video_title = entry.get("title", video_id)
+                future = executor.submit(download_one, video_url, folder)
+                futures[future] = (video_url, video_title, folder)
 
-            if download_one(video_url, folder):
-                pass
-            else:
-                failures.append((video_url, video_title, folder))
-
-            time.sleep(random.uniform(1.5, 3.5))
+            for future in as_completed(futures):
+                if not future.result():
+                    failures.append(futures[future])
+                pbar.update(1)
 
         if failures:
             tqdm.write(f"    {len(failures)} failed (will retry)")
@@ -156,15 +181,22 @@ def main() -> None:
         tqdm.write(f"\nRetrying {len(all_failed)} failed video(s)...\n")
         still_failed = 0
 
-        for url, title, folder in tqdm(
-            all_failed, desc="Retry  ", unit="vid", dynamic_ncols=True
+        with (
+            tqdm(
+                total=len(all_failed), desc="Retry  ", unit="vid", dynamic_ncols=True
+            ) as pbar,
+            ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor,
         ):
-            if download_one(url, folder):
-                pass
-            else:
-                still_failed += 1
-                log_error(f"STILL FAILED  {title}  --  {url}")
-            time.sleep(random.uniform(2, 4))
+            futures = {
+                executor.submit(download_one, url, folder, (2.0, 4.0)): (url, title)
+                for url, title, folder in all_failed
+            }
+            for future in as_completed(futures):
+                if not future.result():
+                    still_failed += 1
+                    url, title = futures[future]
+                    log_error(f"STILL FAILED  {title}  --  {url}")
+                pbar.update(1)
 
         if still_failed:
             tqdm.write(f"\n{still_failed} still failed. See {FAILED_LOG}")
