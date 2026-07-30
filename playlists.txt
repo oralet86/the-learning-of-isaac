@@ -1,12 +1,3 @@
-# Add one playlist URL per line, then run this script again.
-https://www.youtube.com/playlist?list=PLqk8ehfesAmmRzJImbCI74yAZTBSN59D5
-https://www.youtube.com/playlist?list=PLqk8ehfesAmksYrULkhZJnQYIZEDMWM7x
-https://www.youtube.com/watch?v=Wr6GGQ1McqU&list=PLqk8ehfesAmkqZasVLTO37tqsVdVuUYZi
-https://www.youtube.com/watch?v=nKu_URwt0HM&list=PLqk8ehfesAmmwOvOvOwlD_gU_dPVt7F6P
-https://www.youtube.com/watch?v=Vxn2x7P7Y_E&list=PLqk8ehfesAml7vfW_MscIK_vh6xGqtEPu
-https://www.youtube.com/watch?v=_GFndtCzL1s&list=PLqk8ehfesAmnCu-ZuS2eszTiZC3ajr9f2
-https://www.youtube.com/watch?v=NlpvopGRo7c&list=PLqk8ehfesAmk4-dXUOPwYlPM-iUWi3lrl
-https://www.youtube.com/watch?v=GDUa9GFG1bk&list=PLqk8ehfesAmkVUmzdk5rEQUCVDIeE9i8A
 https://www.youtube.com/watch?v=A1HsQaWV1ww&list=PLqk8ehfesAmk7H9_tgjwp4n948vfUXNty
 https://www.youtube.com/watch?v=ODsFLDUiyy4&list=PLqk8ehfesAmkRu1TQ8LPR_Kd4ytb8Vp4l
 https://www.youtube.com/watch?v=rxOVeN7LYmQ&list=PLqk8ehfesAmnFwhkvFLNpCOk1m21DX3_C
@@ -18,8 +9,11 @@ https://www.youtube.com/watch?v=GrouBPAKt6Y&list=PLqk8ehfesAmmrkV4qxSeQI3Cl571fk
 https://www.youtube.com/watch?v=Nr4nfzDNokc&list=PLqk8ehfesAmk83iq4OJO_hfCbZPxLdnV8
 https://www.youtube.com/watch?v=0UA2XPbAedg&list=PLqk8ehfesAmncP5NQYqYy1qtWcx-HRN9S
 https://www.youtube.com/watch?v=rxOVeN7LYmQ&list=PLqk8ehfesAmna1WMWiMzpHUJ3_j4ywBj8
-https://www.youtube.com/watch?v=ZTol8lz9sa4&list=PL8bGkgxUQtC6gy9Sdc8jHPYZfL3zmUu73
-https://www.youtube.com/watch?v=oCRecopgVEg&list=PL8bGkgxUQtC7MutsvQBFL7wZqpUSe6K5h
-https://www.youtube.com/watch?v=EFlWt2wPs0A&list=PL8bGkgxUQtC6WDwP47x9DWP1oji2Jyb46
-https://www.youtube.com/watch?v=2m2COHA2vLQ&list=PL8bGkgxUQtC4uH4T4Z8EkNrK6MS_ziKcI
-https://www.youtube.com/watch?v=VYM7blkVgAM&list=PL8bGkgxUQtC6Pog8NQuspWU0Vvw3GPs42
+https://www.youtube.com/playlist?list=PLqk8ehfesAmmRzJImbCI74yAZTBSN59D5
+https://www.youtube.com/playlist?list=PLqk8ehfesAmksYrULkhZJnQYIZEDMWM7x
+https://www.youtube.com/watch?v=Wr6GGQ1McqU&list=PLqk8ehfesAmkqZasVLTO37tqsVdVuUYZi
+https://www.youtube.com/watch?v=nKu_URwt0HM&list=PLqk8ehfesAmmwOvOvOwlD_gU_dPVt7F6P
+https://www.youtube.com/watch?v=Vxn2x7P7Y_E&list=PLqk8ehfesAml7vfW_MscIK_vh6xGqtEPu
+https://www.youtube.com/watch?v=_GFndtCzL1s&list=PLqk8ehfesAmnCu-ZuS2eszTiZC3ajr9f2
+https://www.youtube.com/watch?v=NlpvopGRo7c&list=PLqk8ehfesAmk4-dXUOPwYlPM-iUWi3lrl
+https://www.youtube.com/watch?v=GDUa9GFG1bk&list=PLqk8ehfesAmkVUmzdk5rEQUCVDIeE9i8A

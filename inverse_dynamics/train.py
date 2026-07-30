@@ -20,10 +20,7 @@ from torchmetrics import MetricCollection
 from torchmetrics.classification import MultilabelAccuracy, MultilabelF1Score
 from tqdm import tqdm
 
-from components import (
-    TrainingConfig,
-    hud_field_names,
-)
+from components import TrainingConfig
 from components.inverse_dynamics_model import InverseDynamicsModel
 from constants import (
     ABLATION_DATA_FRAC,
@@ -82,8 +79,8 @@ def get_device() -> torch.device:
 
 def train_epoch(
     model: nn.Module,
-    loader: DataLoader[tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
-    train_step: Callable[[torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor],
+    loader: DataLoader[tuple[torch.Tensor, torch.Tensor]],
+    train_step: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
     optimizer: torch.optim.Optimizer,
     scaler: GradScaler,
     device: torch.device,
@@ -94,14 +91,13 @@ def train_epoch(
     running_loss: Tensor = torch.zeros(size=(), device=device)
     n_batches = 0
     pbar = tqdm(loader, desc=f"Epoch {epoch:3d} train", unit="batch", leave=False)
-    for x, hud, y in pbar:
+    for x, y in pbar:
         x: Tensor = x.to(device, non_blocking=True)
-        hud: Tensor = hud.to(device, non_blocking=True, dtype=torch.float32)
         y: Tensor = y.to(device, non_blocking=True, dtype=torch.float32)
         optimizer.zero_grad(set_to_none=True)
 
         with autocast(device_type="cuda"):
-            loss: Tensor = train_step(x, hud, y)
+            loss: Tensor = train_step(x, y)
 
         scaler.scale(outputs=loss).backward()
         scaler.unscale_(optimizer)
@@ -123,12 +119,12 @@ def make_train_step(
     model: nn.Module,
     criterion: nn.Module,
     uses_channels_last: bool,
-) -> Callable[[torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor]:
-    def train_step(x_raw: torch.Tensor, hud: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+) -> Callable[[torch.Tensor, torch.Tensor], torch.Tensor]:
+    def train_step(x_raw: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         x: Tensor = x_raw.to(dtype=torch.float16).div(255.0)
         if uses_channels_last:
             x = x.to(memory_format=torch.channels_last)
-        logits: Tensor = model(x, hud)
+        logits: Tensor = model(x)
         loss: Tensor = criterion(logits, y)
         return loss
 
@@ -139,20 +135,18 @@ def make_eval_step(
     model: nn.Module,
     criterion: nn.Module,
     uses_channels_last: bool,
-) -> Callable[
-    [torch.Tensor, torch.Tensor, torch.Tensor], tuple[torch.Tensor, torch.Tensor]
-]:
+) -> Callable[[torch.Tensor, torch.Tensor], tuple[torch.Tensor, torch.Tensor]]:
     to_probs = getattr(
         criterion, "to_binary_probs", lambda t: torch.sigmoid(t.detach())
     )
 
     def eval_step_fn(
-        x_raw: torch.Tensor, hud: torch.Tensor, y: torch.Tensor
+        x_raw: torch.Tensor, y: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
         x: Tensor = x_raw.to(dtype=torch.float16).div(255.0)
         if uses_channels_last:
             x = x.to(memory_format=torch.channels_last)
-        logits: Tensor = model(x, hud)
+        logits: Tensor = model(x)
         loss: Tensor = criterion(logits, y)
         probs: Tensor = to_probs(logits)
         return probs, loss
@@ -163,9 +157,9 @@ def make_eval_step(
 @torch.no_grad()
 def eval_epoch(
     eval_step: Callable[
-        [torch.Tensor, torch.Tensor, torch.Tensor], tuple[torch.Tensor, torch.Tensor]
+        [torch.Tensor, torch.Tensor], tuple[torch.Tensor, torch.Tensor]
     ],
-    loader: DataLoader[tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
+    loader: DataLoader[tuple[torch.Tensor, torch.Tensor]],
     device: torch.device,
     key_names: list[str],
     metric_collection: MetricCollection,
@@ -191,12 +185,11 @@ def eval_epoch(
     all_active_preds = 0
 
     pbar = tqdm(loader, desc=f"Epoch {epoch:3d} val  ", unit="batch", leave=False)
-    for x, hud, y in pbar:
+    for x, y in pbar:
         x: Tensor = x.to(device, non_blocking=True)
-        hud: Tensor = hud.to(device, non_blocking=True, dtype=torch.float32)
         y: Tensor = y.to(device, non_blocking=True, dtype=torch.float32)
         with autocast(device_type="cuda"):
-            probs, loss = eval_step(x, hud, y)
+            probs, loss = eval_step(x, y)
 
         running_loss += loss.item()
         metric_collection.update(probs.float(), y.int())
@@ -341,30 +334,29 @@ def main() -> None:
     )
     print(f"Split: train={len(train_ds):,}  val={len(val_ds):,}  test={len(test_ds):,}")
 
-    hud_dim = len(hud_field_names())
     model_cls_any: Any = cfg.model_cls
-    model = model_cls_any(window_size=cfg.window_size, num_keys=cfg.num_output_logits, hud_dim=hud_dim, dropout=cfg.dropout)  # fmt: skip
+    model = model_cls_any(window_size=cfg.window_size, num_keys=cfg.num_output_logits, dropout=cfg.dropout)  # fmt: skip
     print(f"Model: {cfg.model_name}")
     if cfg.uses_channels_last:
         model = model.to(device, memory_format=torch.channels_last)  # type: ignore
     else:
         model = model.to(device)  # type: ignore
 
-    train_loader: DataLoader[tuple[Tensor, Tensor, Tensor]] = build_loader(
+    train_loader: DataLoader[tuple[Tensor, Tensor]] = build_loader(
         train_ds,
         cfg.batch_size,
         shuffle=True,
         num_workers=NUM_WORKERS,
         drop_last=True,
     )
-    val_loader: DataLoader[tuple[Tensor, Tensor, Tensor]] = build_loader(
+    val_loader: DataLoader[tuple[Tensor, Tensor]] = build_loader(
         val_ds,
         cfg.batch_size * cfg.val_batch_multiplier,
         shuffle=False,
         num_workers=NUM_WORKERS,
         drop_last=False,
     )
-    test_loader: DataLoader[tuple[Tensor, Tensor, Tensor]] = build_loader(
+    test_loader: DataLoader[tuple[Tensor, Tensor]] = build_loader(
         test_ds,
         cfg.batch_size * cfg.val_batch_multiplier,
         shuffle=False,

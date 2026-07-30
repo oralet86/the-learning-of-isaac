@@ -124,7 +124,7 @@ def plot_per_key_metrics(
 
 @torch.no_grad()
 def find_worst_predictions_per_key(
-    test_dataset: Dataset[tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
+    test_dataset: Dataset[tuple[torch.Tensor, torch.Tensor]],
     model: nn.Module,
     device: torch.device,
     key_names: list[str],
@@ -141,7 +141,7 @@ def find_worst_predictions_per_key(
         [] for _ in range(num_keys)
     ]
 
-    loader: DataLoader[tuple[Tensor, Tensor, Tensor]] = DataLoader(
+    loader: DataLoader[tuple[Tensor, Tensor]] = DataLoader(
         test_dataset,
         batch_size=WORST_PRED_BATCH_SIZE,
         shuffle=False,
@@ -149,16 +149,15 @@ def find_worst_predictions_per_key(
     )
 
     pbar = tqdm(loader, desc="Worst preds", unit="batch", leave=False)
-    for x_batch, hud_batch, y_batch in pbar:
+    for x_batch, y_batch in pbar:
         x_batch_cpu = x_batch.clone()
         x_batch = (
             x_batch.to(device, non_blocking=True).to(dtype=torch.float16).div_(255.0)
         )
-        hud_batch = hud_batch.to(device, non_blocking=True, dtype=torch.float32)
         if uses_channels_last:
             x_batch = x_batch.to(memory_format=torch.channels_last)
         with autocast("cuda"):
-            logits = model(x_batch, hud_batch)
+            logits = model(x_batch)
             probs = to_probs_fn(logits)
 
         y_np = y_batch.numpy()
