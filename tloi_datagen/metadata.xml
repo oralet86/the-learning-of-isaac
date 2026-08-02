@@ -1,0 +1,13 @@
+<metadata>
+	<name>TLOI Data Generator</name>
+	<directory>tloi_datagen</directory>
+	<description>
+	Dev-only REPENTOGON mod that poses in-engine scenes (rooms, player state, enemies) in a
+	loop that starts automatically when a run begins, exchanging ground truth with a
+	Python capture daemon via shared files, for synthetic CV training data generation.
+	Not used by the live RL runtime, which stays mod-free. You probably should not
+	download it.
+	</description>
+	<version>1.0</version>
+	<visibility/>
+</metadata>
