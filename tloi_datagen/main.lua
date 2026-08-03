@@ -467,11 +467,9 @@ function mod:OnUpdate()
             runner.scenario_id,
             runner.seed,
             current_stage(),
-            runner.viewport_positions[runner.viewport_index].name,
             runner.viewport_half_extent,
             runner.current_item_delta,
-            get_second_player(),
-            runner.current_capture_mode
+            get_second_player()
         )
         if not Exchange.WritePending(runner.scenario_id, ground_truth) then
             abort_scenario("failed writing exchange file -- check Config.EXCHANGE_DIR")

@@ -56,7 +56,7 @@ def _drain_stream(stream: StreamGame) -> None:
 
 
 def _process_one(
-    config: RunConfig, stream: StreamGame, pending_path: Path
+    config: RunConfig, stream: StreamGame, pending_path: Path, capture_index: int
 ) -> GroundTruthRecord:
     """Capture and save one scenario, then ack it back to the mod.
 
@@ -68,6 +68,10 @@ def _process_one(
         config: Run configuration (exchange dir, output dir).
         stream: An already-started ``StreamGame`` instance.
         pending_path: The ground-truth file to process.
+        capture_index: A daemon-assigned counter, unique across this
+            daemon's lifetime, used to build `image_id`. Needed because
+            multiple viewport captures within one room visit share a single
+            `scenario_id` and would otherwise collide on the same filename.
 
     Returns:
         The ground-truth record that was written to disk.
@@ -76,8 +80,7 @@ def _process_one(
     scenario_id = raw_ground_truth["scenario_id"]
     pending_path.unlink(missing_ok=True)
 
-    viewport = raw_ground_truth["camera_viewport_position"]
-    image_id = f"{scenario_id}_{viewport}"
+    image_id = f"{scenario_id}_{capture_index}"
     image_path = config.output_dir / "images" / f"{image_id}.png"
     capture_frame(stream, image_path)
 
@@ -93,25 +96,22 @@ def _process_one(
         image_id=image_id,
         scenario_id=scenario_id,
         seed=raw_ground_truth["seed"],
-        stage=raw_ground_truth["stage"],
-        room_shape=raw_ground_truth["room_shape"],
-        room_type=raw_ground_truth["room_type"],
-        camera_viewport_position=raw_ground_truth["camera_viewport_position"],
+        stage_bucket=raw_ground_truth["stage_bucket"],
         player=PlayerStateM1(
-            character=player_raw["character"],
-            position=(player_raw["position"][0], player_raw["position"][1]),
+            frame_position=(
+                player_raw["frame_position"][0],
+                player_raw["frame_position"][1],
+            ),
         ),
         player2=PlayerStateM1(
-            character=player2_raw["character"],
-            position=(player2_raw["position"][0], player2_raw["position"][1]),
+            frame_position=(
+                player2_raw["frame_position"][0],
+                player2_raw["frame_position"][1],
+            ),
         )
         if player2_raw is not None
         else None,
-        items_held=raw_ground_truth["items_held"],
-        item_delta=ItemDelta(
-            action=item_delta_raw["action"],
-            item_id=item_delta_raw.get("item_id"),
-        ),
+        item_delta=ItemDelta(action=item_delta_raw["action"]),
         active_item=ActiveItem(
             held=active_item_raw["held"],
             item_id=active_item_raw.get("item_id"),
@@ -126,6 +126,7 @@ def _process_one(
             kind=consumable_raw["kind"],
             card_id=consumable_raw.get("card_id"),
             pill_color=consumable_raw.get("pill_color"),
+            pill_known=consumable_raw.get("pill_known"),
         ),
         stats=PlayerStats(
             damage=stats_raw["damage"],
@@ -149,10 +150,10 @@ def _process_one(
         ),
         enemies=[
             EnemyState(
-                type=enemy_raw["type"],
-                variant=enemy_raw["variant"],
-                subtype=enemy_raw["subtype"],
-                position=(enemy_raw["position"][0], enemy_raw["position"][1]),
+                frame_position=(
+                    enemy_raw["frame_position"][0],
+                    enemy_raw["frame_position"][1],
+                ),
             )
             for enemy_raw in raw_ground_truth["enemies"]
         ],
@@ -165,7 +166,6 @@ def _process_one(
             )
             for door_raw in raw_ground_truth["doors"]
         ],
-        capture_mode=raw_ground_truth["capture_mode"],
         timestamp=datetime.now(UTC).isoformat(),
     )
 
@@ -191,12 +191,14 @@ def run_daemon(config: RunConfig, stream: StreamGame) -> None:
         config.exchange_dir,
     )
     captured_count = 0
+    capture_index = 0
     while True:
         _drain_stream(stream)
         for pending_path in find_pending(config.exchange_dir):
+            capture_index += 1
             try:
-                record = _process_one(config, stream, pending_path)
-            except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                record = _process_one(config, stream, pending_path, capture_index)
+            except KeyError, TypeError, ValueError, json.JSONDecodeError:
                 logger.exception(
                     "malformed ground-truth file %s, skipping", pending_path
                 )
@@ -204,14 +206,12 @@ def run_daemon(config: RunConfig, stream: StreamGame) -> None:
             else:
                 captured_count += 1
                 logger.info(
-                    "[%d] captured %s (seed=%d, stage=%s, room_type=%d, items=%d, "
+                    "[%d] captured %s (seed=%d, stage_bucket=%d, "
                     "delta=%s, active=%s, consumable=%s, enemies=%d, doors=%d)",
                     captured_count,
                     record.image_id,
                     record.seed,
-                    record.stage,
-                    record.room_type,
-                    record.items_held,
+                    record.stage_bucket,
                     record.item_delta.action,
                     record.active_item.item_id,
                     record.consumable.kind,

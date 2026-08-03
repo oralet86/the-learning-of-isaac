@@ -1,3 +1,6 @@
+local StageRoute = include("data.stage_route")
+local FrameGeometry = include("scenario.frame_geometry")
+
 ---@class GroundTruthQuery
 local GroundTruthQuery = {}
 
@@ -11,23 +14,37 @@ local function collect_currency(player)
     }
 end
 
+-- kind encoding (MOD_CHANGES_NEEDED.md item 5, matches
+-- visual_extraction/labels.py's already-shipped KIND_CARD/KIND_PILL
+-- constants -- not a free choice, must stay in sync with that consumer).
+local CONSUMABLE_KIND_NONE = 0
+local CONSUMABLE_KIND_CARD = 1
+local CONSUMABLE_KIND_PILL = 2
+
 -- The player's pocket item slot: a card (unified id space covering
 -- tarot/playing cards, runes, and soul stones) or a pill, never both at
 -- once. Read live via GetCard()/GetPill() rather than trusting
 -- Consumables.RollConsumables's intent, per this project's "log actual
 -- queried state" principle -- protects against a partial/clamped SetCard
 -- call the same way every other collect_* helper here does.
+--
+-- `pill_known` (only populated when a pill is held) is read live via
+-- ItemPool:IsPillIdentified(pill_color) -- the game's own source of truth
+-- for whether the pill guide/HUD would show this color's effect as
+-- revealed, including the PHD/Virgo/False PHD "always identified" quirk
+-- that method already accounts for internally.
 ---@param player EntityPlayer
 ---@return table
 local function collect_consumable(player)
     local card_id = player:GetCard(0)
     local pill_color = player:GetPill(0)
     if card_id ~= 0 then
-        return { kind = "card", card_id = card_id, pill_color = nil }
+        return { kind = CONSUMABLE_KIND_CARD, card_id = card_id, pill_color = nil, pill_known = nil }
     elseif pill_color ~= 0 then
-        return { kind = "pill", card_id = nil, pill_color = pill_color }
+        local pill_known = Game():GetItemPool():IsPillIdentified(pill_color)
+        return { kind = CONSUMABLE_KIND_PILL, card_id = nil, pill_color = pill_color, pill_known = pill_known }
     end
-    return { kind = "none", card_id = nil, pill_color = nil }
+    return { kind = CONSUMABLE_KIND_NONE, card_id = nil, pill_color = nil, pill_known = nil }
 end
 
 ---@param value number
@@ -103,6 +120,13 @@ end
 -- `viewport_center`, matching the in-game camera's real coverage (always a
 -- single 1x1 room's worth of view, following the player). Both are
 -- computed by scenario.viewports from the room's actual shape/bounds.
+--
+-- `frame_position` (MOD_CHANGES_NEEDED.md item 6) is the same
+-- FrameGeometry.NormalizedPosition crop-geometry math collect_player uses,
+-- applied per enemy -- visual_extraction's spatial detection grid only ever
+-- reads `frame_position` off each entry, not `type`/`variant`/`subtype`/the
+-- world-space `position` (out of scope for now -- see labels.py's own
+-- docstring), so none of those are included here.
 ---@param viewport_center Vector
 ---@param viewport_half_extent Vector
 ---@return table[]
@@ -115,11 +139,9 @@ local function collect_enemies(viewport_center, viewport_half_extent)
             local dx = math.abs(entity.Position.X - viewport_center.X)
             local dy = math.abs(entity.Position.Y - viewport_center.Y)
             if dx <= viewport_half_extent.X and dy <= viewport_half_extent.Y then
+                local frame_position = FrameGeometry.NormalizedPosition(entity.Position, viewport_center, viewport_half_extent)
                 enemies[#enemies + 1] = {
-                    type = entity.Type,
-                    variant = entity.Variant,
-                    subtype = entity.SubType,
-                    position = { entity.Position.X, entity.Position.Y },
+                    frame_position = { frame_position.x, frame_position.y },
                 }
             end
         end
@@ -188,13 +210,20 @@ local function collect_doors(viewport_center, viewport_half_extent)
     return doors
 end
 
+-- `frame_position` (MOD_CHANGES_NEEDED.md item 2) is where `player` sits
+-- within the *captured frame*, not the room -- same FrameGeometry
+-- crop-geometry math collect_enemies uses, a second consumer of the same
+-- per-room-visit viewport_center/viewport_half_extent. `character` and the
+-- world-space `position` aren't included -- visual_extraction/labels.py
+-- only ever reads `frame_position` off this table.
 ---@param player EntityPlayer
+---@param viewport_center Vector
+---@param viewport_half_extent Vector
 ---@return table
-local function collect_player(player)
-    local pos = player.Position
+local function collect_player(player, viewport_center, viewport_half_extent)
+    local frame_position = FrameGeometry.NormalizedPosition(player.Position, viewport_center, viewport_half_extent)
     return {
-        character = player:GetPlayerType(),
-        position = { pos.X, pos.Y },
+        frame_position = { frame_position.x, frame_position.y },
     }
 end
 
@@ -226,45 +255,46 @@ end
 -- Builds ground truth by querying live player/game state (never
 -- re-deriving it from what the scenario builder intended to spawn), so a
 -- partial/clamped spawn is reflected accurately.
+--
+-- Only fields visual_extraction's labels.py actually reads make it into the
+-- returned table -- `stage` (superseded by `stage_bucket`), `room_shape`,
+-- `room_type`, `items_held`, and `capture_mode` are computed/tracked
+-- elsewhere in this mod but never consumed by any training head, so
+-- they're deliberately left out here rather than logged as dead weight.
 ---@param player EntityPlayer
 ---@param scenario_id string
 ---@param seed integer
 ---@param stage string
----@param camera_viewport_position string
 ---@param viewport_half_extent Vector Half-extent of the current viewport's frame (a single 1x1 room's worth of view), for filtering `enemies` to what's actually in-frame. From scenario.viewports.
----@param item_delta {action: string, item_id: integer?} The action taken this room visit (see ItemSpawning.RollDelta) -- kept as-is rather than re-queried, since it's a logged event, not a live-queryable snapshot value.
+---@param item_delta {action: integer, item_id: integer?} The action taken this room visit (0=none, 1=add, 2=remove -- see ItemSpawning.RollDelta). Only `action` is exported below -- `item_id` isn't consumed downstream, though it's still needed by main.lua to actually apply the pickup/drop via AddCollectible/RemoveCollectible.
 ---@param player2 EntityPlayer? The second twin (Jacob & Esau / Tainted Forgotten), or nil for every other character.
----@param capture_mode string "idle" or "animated" -- rolled once per room visit by main.lua, per Config.CAPTURE_MODE_ANIMATED_PCT.
 ---@return table
 function GroundTruthQuery.CollectState(
     player,
     scenario_id,
     seed,
     stage,
-    camera_viewport_position,
     viewport_half_extent,
     item_delta,
-    player2,
-    capture_mode
+    player2
 )
-    local room = Game():GetRoom()
     return {
         scenario_id = scenario_id,
         seed = seed,
-        stage = stage,
-        room_shape = room:GetRoomShape(),
-        room_type = room:GetType(),
-        camera_viewport_position = camera_viewport_position,
-        player = collect_player(player),
+        stage_bucket = StageRoute.StageBucket(stage),
+        player = collect_player(player, player.Position, viewport_half_extent),
         -- player2 is only present in the returned table for duo characters
         -- (Jacob & Esau, Tainted Forgotten) -- the vendored JSON encoder
         -- omits nil-valued keys entirely, so downstream consumers see the
         -- key missing rather than null for every other character, and must
         -- treat "missing" as "not a duo character". player2's active item
         -- is deliberately not tracked/logged at all -- unneeded complexity.
-        player2 = player2 ~= nil and collect_player(player2) or nil,
-        items_held = player:GetCollectibleCount(),
-        item_delta = item_delta,
+        -- player2's frame_position is computed against the same viewport
+        -- centered on player1's position (the camera always follows
+        -- player1, never player2), matching how collect_enemies/
+        -- collect_doors already frame-filter against player.Position too.
+        player2 = player2 ~= nil and collect_player(player2, player.Position, viewport_half_extent) or nil,
+        item_delta = { action = item_delta.action },
         active_item = collect_active_item(player),
         currency = collect_currency(player),
         consumable = collect_consumable(player),
@@ -277,7 +307,6 @@ function GroundTruthQuery.CollectState(
         -- everything else here.
         enemies = collect_enemies(player.Position, viewport_half_extent),
         doors = collect_doors(player.Position, viewport_half_extent),
-        capture_mode = capture_mode,
     }
 end
 

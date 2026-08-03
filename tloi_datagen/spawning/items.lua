@@ -84,6 +84,13 @@ local function currently_held_from_pool(player, pool)
     return held
 end
 
+-- action encoding (MOD_CHANGES_NEEDED.md item 5, matches
+-- visual_extraction/labels.py's already-shipped "0=none, 1=add, 2=remove"
+-- doc comment -- not a free choice, must stay in sync with that consumer).
+local ITEM_DELTA_ACTION_NONE = 0
+local ITEM_DELTA_ACTION_ADD = 1
+local ITEM_DELTA_ACTION_REMOVE = 2
+
 -- Rolls one of three item-delta actions for a single room visit --
 -- Config.ITEM_DELTA_ADD_PCT chance to add one random pool item,
 -- Config.ITEM_DELTA_REMOVE_PCT chance to remove one currently-held pool
@@ -97,7 +104,7 @@ end
 -- Config.TAINTED_ISAAC_ITEM_CAP items -- see ApplyBaseline's docstring.
 ---@param player EntityPlayer
 ---@param rng RNG
----@return {action: string, item_id: integer?}
+---@return {action: integer, item_id: integer?}
 function ItemSpawning.RollDelta(player, rng)
     local roll = rng:RandomFloat()
     local at_tainted_isaac_cap = player:GetPlayerType() == PlayerType.PLAYER_ISAAC_B
@@ -107,7 +114,7 @@ function ItemSpawning.RollDelta(player, rng)
         local pool = get_item_pool()
         local item_id = pool[rng:RandomInt(#pool) + 1]
         player:AddCollectible(item_id, 0, false)
-        return { action = "add", item_id = item_id }
+        return { action = ITEM_DELTA_ACTION_ADD, item_id = item_id }
     end
 
     if roll < Config.ITEM_DELTA_ADD_PCT + Config.ITEM_DELTA_REMOVE_PCT then
@@ -115,11 +122,11 @@ function ItemSpawning.RollDelta(player, rng)
         if #held > 0 then
             local item_id = held[rng:RandomInt(#held) + 1]
             player:RemoveCollectible(item_id)
-            return { action = "remove", item_id = item_id }
+            return { action = ITEM_DELTA_ACTION_REMOVE, item_id = item_id }
         end
     end
 
-    return { action = "none", item_id = nil }
+    return { action = ITEM_DELTA_ACTION_NONE, item_id = nil }
 end
 
 -- Built lazily, same pattern/rationale as get_item_pool -- every real

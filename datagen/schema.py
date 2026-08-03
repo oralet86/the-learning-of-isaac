@@ -10,13 +10,11 @@ class PlayerStateM1:
     """Minimal player state read back from the mod.
 
     Attributes:
-        character: Numeric ``PlayerType`` id, as reported by the mod's
-            ``EntityPlayer:GetPlayerType()`` call.
-        position: World-space ``(x, y)`` position.
+        frame_position: Normalized ``(x, y)`` position within the captured
+            frame, each in ``[0, 1]``
     """
 
-    character: int
-    position: tuple[float, float]
+    frame_position: tuple[float, float]
 
 
 @dataclass
@@ -43,15 +41,19 @@ class Consumable:
     and soul stones all share one id space in the game's ``Card`` enum.
 
     Attributes:
-        kind: ``"card"``, ``"pill"``, or ``"none"``.
-        card_id: The ``Card`` enum id, or ``None`` unless `kind` is ``"card"``.
+        kind: ``0`` (none), ``1`` (card), or ``2`` (pill).
+        card_id: The ``Card`` enum id, or ``None`` unless `kind` is ``1``.
         pill_color: The ``PillColor`` enum id, or ``None`` unless `kind` is
-            ``"pill"``.
+            ``2``.
+        pill_known: Whether this run's player has already identified
+            `pill_color`'s effect (``ItemPool:IsPillIdentified``), or
+            ``None`` unless `kind` is ``2``.
     """
 
-    kind: str
+    kind: int
     card_id: int | None
     pill_color: int | None
+    pill_known: bool | None
 
 
 @dataclass
@@ -126,13 +128,14 @@ class ItemDelta:
     detector as an RL reward signal.
 
     Attributes:
-        action: ``"add"``, ``"remove"``, or ``"none"``.
-        item_id: The ``CollectibleType`` id involved, or ``None`` when
-            `action` is ``"none"``.
+        action: ``0`` (none), ``1`` (add), or ``2`` (remove). The mod's own
+            ``ItemSpawning.RollDelta`` also tracks which ``CollectibleType``
+            id was involved (needed to actually apply the pickup/drop
+            in-game), but that id isn't collected here -- no training head
+            reads it.
     """
 
-    action: str
-    item_id: int | None
+    action: int
 
 
 @dataclass
@@ -181,19 +184,18 @@ class Door:
 
 @dataclass
 class EnemyState:
-    """A single enemy's identity and position.
+    """A single enemy's position within the captured frame.
 
     Attributes:
-        type: ``Entity.Type`` (``EntityType`` enum value).
-        variant: ``Entity.Variant``.
-        subtype: ``Entity.SubType``.
-        position: World-space ``(x, y)`` position.
+        frame_position: Normalized ``(x, y)`` position within the captured
+            frame, each in ``[0, 1]`` -- see
+            ``tloi_datagen/scenario/frame_geometry.lua``. The only field
+            here -- ``type``/``variant``/``subtype`` and the world-space
+            ``position`` aren't collected, since the detection head only
+            predicts position, not identity (see ``visual_extraction/labels.py``).
     """
 
-    type: int
-    variant: int
-    subtype: int
-    position: tuple[float, float]
+    frame_position: tuple[float, float]
 
 
 @dataclass
@@ -201,24 +203,19 @@ class GroundTruthRecord:
     """Ground truth for a single captured frame.
 
     Attributes:
-        image_id: Filename stem shared by the image and this record.
+        image_id: Filename stem shared by the image and this record --
+            ``{scenario_id}_{capture_index}``, `capture_index` assigned by
+            the daemon itself (see ``datagen.daemon``) since multiple
+            viewport captures within one room visit share a `scenario_id`.
         scenario_id: Identifier assigned by the mod, echoed in its
             exchange-file names (see ``datagen.exchange``).
         seed: RNG seed used to build this scenario.
-        stage: Stage identifier string passed to the mod.
-        room_shape: Numeric ``RoomShape`` enum value (``Room:GetRoomShape()``).
-        room_type: Numeric ``RoomType`` enum value (``Room:GetType()``).
-        camera_viewport_position: Named viewport position within the room
-            visit (e.g. ``"center"``, ``"corner_tl"``, ``"edge_top"``,
-            ``"end_a"``) -- how many and which names appear depends on the
-            room's shape (see ``tloi_datagen/scenario/viewports.lua``).
+        stage_bucket: 10-class ordinal progression bucket (0-9), computed
+            mod-side from the internal stage-route string -- see
+            ``tloi_datagen/data/stage_route.lua``'s ``StageRoute.StageBucket``.
         player: Minimal player state.
         player2: The second twin's state (Jacob & Esau / Tainted
             Forgotten), or ``None`` for every other character.
-        items_held: Player 1's total collectible count
-            (``EntityPlayer:GetCollectibleCount()``). Duo characters'
-            player2 gets its own independent passive-item baseline, but it
-            isn't tracked here -- only player1's.
         item_delta: The item pickup/drop action taken for this room visit.
         active_item: The active item held (if any) for this room visit.
             player2's active item is not tracked or logged at all.
@@ -233,20 +230,15 @@ class GroundTruthRecord:
             single 1x1 room's worth of view around the viewport position),
             not every enemy in the whole room for shapes larger than 1x1.
         doors: Doors present in the room, one entry per side that has one.
-        capture_mode: ``"idle"`` or ``"animated"``.
         timestamp: Capture time, ISO 8601, set by the capture daemon.
     """
 
     image_id: str
     scenario_id: str
     seed: int
-    stage: str
-    room_shape: int
-    room_type: int
-    camera_viewport_position: str
+    stage_bucket: int
     player: PlayerStateM1
     player2: PlayerStateM1 | None
-    items_held: int
     item_delta: ItemDelta
     active_item: ActiveItem
     currency: CurrencyState
@@ -255,5 +247,4 @@ class GroundTruthRecord:
     health: PlayerHealth
     enemies: list[EnemyState]
     doors: list[Door]
-    capture_mode: str
     timestamp: str
