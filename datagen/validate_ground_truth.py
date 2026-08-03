@@ -114,7 +114,9 @@ def _check_extra_keys(
 def _check_missing_keys(
     obj: dict[str, Any], required: frozenset[str], path: str
 ) -> list[str]:
-    return [f"{path}.{key}: missing required field" for key in required if key not in obj]
+    return [
+        f"{path}.{key}: missing required field" for key in required if key not in obj
+    ]
 
 
 def validate_frame_position(value: Any, path: str) -> list[str]:  # noqa: ANN401
@@ -126,7 +128,9 @@ def validate_frame_position(value: Any, path: str) -> list[str]:  # noqa: ANN401
         if not _is_number(component):
             errors.append(f"{path}[{i}] ({axis}): expected a number, got {component!r}")
         elif not (0.0 <= component <= 1.0):
-            errors.append(f"{path}[{i}] ({axis}): expected a value in [0, 1], got {component}")
+            errors.append(
+                f"{path}[{i}] ({axis}): expected a value in [0, 1], got {component}"
+            )
     return errors
 
 
@@ -134,9 +138,13 @@ def _validate_player(obj: Any, path: str) -> list[str]:  # noqa: ANN401
     if not isinstance(obj, dict):
         return [f"{path}: expected an object, got {obj!r}"]
     errors = _check_missing_keys(obj, frozenset({"frame_position"}), path)
-    errors += _check_extra_keys(obj, frozenset({"frame_position"}), REMOVED_PLAYER_FIELDS, path)
+    errors += _check_extra_keys(
+        obj, frozenset({"frame_position"}), REMOVED_PLAYER_FIELDS, path
+    )
     if "frame_position" in obj:
-        errors += validate_frame_position(obj["frame_position"], f"{path}.frame_position")
+        errors += validate_frame_position(
+            obj["frame_position"], f"{path}.frame_position"
+        )
     return errors
 
 
@@ -144,18 +152,26 @@ def _validate_item_delta(obj: Any, path: str) -> list[str]:  # noqa: ANN401
     if not isinstance(obj, dict):
         return [f"{path}: expected an object, got {obj!r}"]
     errors = _check_missing_keys(obj, frozenset({"action"}), path)
-    errors += _check_extra_keys(obj, frozenset({"action"}), REMOVED_ITEM_DELTA_FIELDS, path)
+    errors += _check_extra_keys(
+        obj, frozenset({"action"}), REMOVED_ITEM_DELTA_FIELDS, path
+    )
     action = obj.get("action")
     if "action" in obj and (not _is_int(action) or action not in (0, 1, 2)):
-        errors.append(f"{path}.action: expected 0 (none), 1 (add), or 2 (remove), got {action!r}")
+        errors.append(
+            f"{path}.action: expected 0 (none), 1 (add), or 2 (remove), got {action!r}"
+        )
     return errors
 
 
 def _validate_active_item(obj: Any, path: str) -> list[str]:  # noqa: ANN401
     if not isinstance(obj, dict):
         return [f"{path}: expected an object, got {obj!r}"]
+    # `item_id`/`charge` are Lua-nil (not JSON null) when `held` is false --
+    # the mod's vendored JSON encoder omits nil-valued table keys entirely,
+    # so they may be legitimately *absent* from the JSON, not just null.
+    # Only `held` is unconditionally required.
     allowed = frozenset({"held", "item_id", "charge"})
-    errors = _check_missing_keys(obj, allowed, path)
+    errors = _check_missing_keys(obj, frozenset({"held"}), path)
     errors += _check_extra_keys(obj, allowed, frozenset(), path)
     if "held" not in obj:
         return errors
@@ -163,15 +179,23 @@ def _validate_active_item(obj: Any, path: str) -> list[str]:  # noqa: ANN401
     errors += _check_type(held, _is_bool, f"{path}.held", "a bool")
     if held is True:
         if obj.get("item_id") is None or not _is_int(obj["item_id"]):
-            errors.append(f"{path}.item_id: expected an int when held is true, got {obj.get('item_id')!r}")
+            errors.append(
+                f"{path}.item_id: expected an int when held is true, got {obj.get('item_id')!r}"
+            )
         charge = obj.get("charge")
         if charge is None or not _is_number(charge) or not (0.0 <= charge <= 1.0):
-            errors.append(f"{path}.charge: expected a number in [0, 1] when held is true, got {charge!r}")
+            errors.append(
+                f"{path}.charge: expected a number in [0, 1] when held is true, got {charge!r}"
+            )
     elif held is False:
         if obj.get("item_id") is not None:
-            errors.append(f"{path}.item_id: expected null when held is false, got {obj['item_id']!r}")
+            errors.append(
+                f"{path}.item_id: expected null when held is false, got {obj['item_id']!r}"
+            )
         if obj.get("charge") is not None:
-            errors.append(f"{path}.charge: expected null when held is false, got {obj['charge']!r}")
+            errors.append(
+                f"{path}.charge: expected null when held is false, got {obj['charge']!r}"
+            )
     return errors
 
 
@@ -191,31 +215,66 @@ def _validate_currency(obj: Any, path: str) -> list[str]:  # noqa: ANN401
 def _validate_consumable(obj: Any, path: str) -> list[str]:  # noqa: ANN401
     if not isinstance(obj, dict):
         return [f"{path}: expected an object, got {obj!r}"]
+    # `card_id`/`pill_color`/`pill_known` are Lua-nil (not JSON null) when
+    # not applicable to `kind` -- omitted from the JSON entirely by the
+    # mod's vendored encoder, same reasoning as `active_item` above. Only
+    # `kind` is unconditionally required; `pill_known` is additionally
+    # allowed to be absent even when `kind` is 2 (pill), matching
+    # `visual_extraction/labels.py`'s explicit handling of older mod builds
+    # that don't emit it yet.
     allowed = frozenset({"kind", "card_id", "pill_color", "pill_known"})
-    errors = _check_missing_keys(obj, allowed, path)
+    errors = _check_missing_keys(obj, frozenset({"kind"}), path)
     errors += _check_extra_keys(obj, allowed, frozenset(), path)
     kind = obj.get("kind")
     if "kind" in obj and (not _is_int(kind) or kind not in (0, 1, 2)):
-        errors.append(f"{path}.kind: expected 0 (none), 1 (card), or 2 (pill), got {kind!r}")
+        errors.append(
+            f"{path}.kind: expected 0 (none), 1 (card), or 2 (pill), got {kind!r}"
+        )
 
-    card_id, pill_color, pill_known = obj.get("card_id"), obj.get("pill_color"), obj.get("pill_known")
+    card_id, pill_color, pill_known = (
+        obj.get("card_id"),
+        obj.get("pill_color"),
+        obj.get("pill_known"),
+    )
     if kind == 1:
         if card_id is None or not _is_int(card_id):
-            errors.append(f"{path}.card_id: expected an int when kind is 1 (card), got {card_id!r}")
+            errors.append(
+                f"{path}.card_id: expected an int when kind is 1 (card), got {card_id!r}"
+            )
         if pill_color is not None:
-            errors.append(f"{path}.pill_color: expected null when kind is 1 (card), got {pill_color!r}")
+            errors.append(
+                f"{path}.pill_color: expected null/absent when kind is 1 (card), got {pill_color!r}"
+            )
+        if pill_known is not None:
+            errors.append(
+                f"{path}.pill_known: expected null/absent when kind is 1 (card), got {pill_known!r}"
+            )
     elif kind == 2:
         if pill_color is None or not _is_int(pill_color):
-            errors.append(f"{path}.pill_color: expected an int when kind is 2 (pill), got {pill_color!r}")
+            errors.append(
+                f"{path}.pill_color: expected an int when kind is 2 (pill), got {pill_color!r}"
+            )
         if card_id is not None:
-            errors.append(f"{path}.card_id: expected null when kind is 2 (pill), got {card_id!r}")
+            errors.append(
+                f"{path}.card_id: expected null/absent when kind is 2 (pill), got {card_id!r}"
+            )
         if pill_known is not None and not _is_bool(pill_known):
-            errors.append(f"{path}.pill_known: expected a bool or null, got {pill_known!r}")
+            errors.append(
+                f"{path}.pill_known: expected a bool, or null/absent, got {pill_known!r}"
+            )
     elif kind == 0:
         if card_id is not None:
-            errors.append(f"{path}.card_id: expected null when kind is 0 (none), got {card_id!r}")
+            errors.append(
+                f"{path}.card_id: expected null/absent when kind is 0 (none), got {card_id!r}"
+            )
         if pill_color is not None:
-            errors.append(f"{path}.pill_color: expected null when kind is 0 (none), got {pill_color!r}")
+            errors.append(
+                f"{path}.pill_color: expected null/absent when kind is 0 (none), got {pill_color!r}"
+            )
+        if pill_known is not None:
+            errors.append(
+                f"{path}.pill_known: expected null/absent when kind is 0 (none), got {pill_known!r}"
+            )
     return errors
 
 
@@ -241,13 +300,17 @@ def _validate_health(obj: Any, path: str) -> list[str]:  # noqa: ANN401
     if unknown is True:
         for field in _HEALTH_COUNT_FIELDS:
             if obj.get(field) is not None:
-                errors.append(f"{path}.{field}: expected null under Curse of the Unknown, got {obj.get(field)!r}")
+                errors.append(
+                    f"{path}.{field}: expected null under Curse of the Unknown, got {obj.get(field)!r}"
+                )
     elif unknown is False:
         errors += _check_missing_keys(obj, frozenset(_HEALTH_COUNT_FIELDS), path)
         for field in set(_HEALTH_COUNT_FIELDS) & obj.keys():
             value = obj[field]
             if not _is_int(value) or value < 0:
-                errors.append(f"{path}.{field}: expected a non-negative int, got {value!r}")
+                errors.append(
+                    f"{path}.{field}: expected a non-negative int, got {value!r}"
+                )
     return errors
 
 
@@ -255,9 +318,13 @@ def _validate_enemy(obj: Any, path: str) -> list[str]:  # noqa: ANN401
     if not isinstance(obj, dict):
         return [f"{path}: expected an object, got {obj!r}"]
     errors = _check_missing_keys(obj, frozenset({"frame_position"}), path)
-    errors += _check_extra_keys(obj, frozenset({"frame_position"}), REMOVED_ENEMY_FIELDS, path)
+    errors += _check_extra_keys(
+        obj, frozenset({"frame_position"}), REMOVED_ENEMY_FIELDS, path
+    )
     if "frame_position" in obj:
-        errors += validate_frame_position(obj["frame_position"], f"{path}.frame_position")
+        errors += validate_frame_position(
+            obj["frame_position"], f"{path}.frame_position"
+        )
     return errors
 
 
@@ -303,7 +370,12 @@ def validate_record(record: Any, daemon_labels: bool = False) -> list[str]:  # n
     errors += _check_extra_keys(record, allowed, REMOVED_TOP_LEVEL_FIELDS, "<root>")
 
     if "scenario_id" in record:
-        errors += _check_type(record["scenario_id"], lambda v: isinstance(v, str), "scenario_id", "a string")
+        errors += _check_type(
+            record["scenario_id"],
+            lambda v: isinstance(v, str),
+            "scenario_id",
+            "a string",
+        )
     if "seed" in record:
         errors += _check_type(record["seed"], _is_int, "seed", "an int")
     if "stage_bucket" in record:
@@ -361,8 +433,12 @@ def _iter_json_files(path: Path, pattern: str) -> list[Path]:
 def main() -> int:
     """CLI entry point. Returns a process exit code (0 = all valid)."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("paths", nargs="+", type=Path, help="JSON file(s) or directory(ies) to validate")
-    parser.add_argument("--glob", default="*.json", help="Glob pattern used when a path is a directory")
+    parser.add_argument(
+        "paths", nargs="+", type=Path, help="JSON file(s) or directory(ies) to validate"
+    )
+    parser.add_argument(
+        "--glob", default="*.json", help="Glob pattern used when a path is a directory"
+    )
     parser.add_argument(
         "--daemon-labels",
         action="store_true",
