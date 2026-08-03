@@ -32,13 +32,14 @@ Config.CAPTURE_MODE_ANIMATED_PCT = 0.3
 Config.SETTLE_TICKS_ANIMATED = 5
 Config.VIEWPORT_SETTLE_TICKS_ANIMATED = 2
 
--- Number of camera-viewport positions to sample for a 1x1 room visit. The
--- whole room is always in-frame regardless of player position for this
--- shape, so unlike the other shape buckets this is purely for
--- player-position/pose diversity across captures, not framing coverage.
--- Position 1 is always the room center; the rest are additional valid
--- random positions (see scenario/viewports.lua's single_room_positions).
-Config.VIEWPORTS_PER_1X1_ROOM = 3
+-- Base number of camera-viewport positions to sample per "1x1 unit" of a
+-- room's area (see scenario/viewports.lua's ROOM_UNIT_AREA) -- e.g. a 1x1
+-- room (1 unit) samples this many positions, a long-axis room (2 units)
+-- samples twice this many, a 2x2/L-shape room (4 units) samples four times
+-- this many. Position 1 is always the room center, for a deterministic
+-- baseline capture; the rest are additional valid random positions (see
+-- scenario/viewports.lua's random_room_positions).
+Config.VIEWPORTS_PER_ROOM_UNIT = 3
 
 -- Ticks to wait for the Python daemon to ack a posed scenario before giving
 -- up and retrying -- guards against silently hanging forever if the daemon

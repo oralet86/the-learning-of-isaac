@@ -27,7 +27,7 @@ from datagen.schema import (
     CurrencyState,
     Door,
     EnemyState,
-    GroundTruthRecordM1,
+    GroundTruthRecord,
     ItemDelta,
     PlayerHealth,
     PlayerStateM1,
@@ -57,7 +57,7 @@ def _drain_stream(stream: StreamGame) -> None:
 
 def _process_one(
     config: RunConfig, stream: StreamGame, pending_path: Path
-) -> GroundTruthRecordM1:
+) -> GroundTruthRecord:
     """Capture and save one scenario, then ack it back to the mod.
 
     Claims `pending_path` by deleting it before the (slower) capture step,
@@ -89,7 +89,7 @@ def _process_one(
     health_raw = raw_ground_truth["health"]
     item_delta_raw = raw_ground_truth["item_delta"]
     active_item_raw = raw_ground_truth["active_item"]
-    record = GroundTruthRecordM1(
+    record = GroundTruthRecord(
         image_id=image_id,
         scenario_id=scenario_id,
         seed=raw_ground_truth["seed"],

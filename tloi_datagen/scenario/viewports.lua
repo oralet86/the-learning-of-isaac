@@ -25,11 +25,10 @@ local LONG_AXIS_SHAPES = {
     [RoomShape.ROOMSHAPE_IIH] = true,
 }
 
--- 2x2 and every L-shape rotation share the same "3x3 lerp grid, drop
--- invalid points" treatment -- for a 2x2 room every point is valid; for an
--- L-shape, IsPositionInRoom filters out the missing quadrant's corner and
--- its two adjacent edge points, leaving points that sit in the two valid
--- arms plus one near the elbow/junction.
+-- 2x2 and every L-shape rotation share the same "4 unit-area" bounding box
+-- -- an L-shape is missing one quadrant, but SampleValidPosition only ever
+-- lands in the room's actual valid area regardless, so no separate
+-- treatment is needed for the missing quadrant here.
 local QUADRANT_GRID_SHAPES = {
     [RoomShape.ROOMSHAPE_2x2] = true,
     [RoomShape.ROOMSHAPE_LTL] = true,
@@ -38,91 +37,37 @@ local QUADRANT_GRID_SHAPES = {
     [RoomShape.ROOMSHAPE_LBR] = true,
 }
 
----@param a number
----@param b number
----@param t number
----@return number
-local function lerp(a, b, t)
-    return a + (b - a) * t
-end
-
--- Extreme lerp fraction used for corners/edges/ends, inset slightly from
--- the exact 0/1 boundary -- t=0/1 lands exactly on GetTopLeftPos()/
--- GetBottomRightPos(), which is right at the edge of what
--- Room:IsPositionInRoom()'s margin check will accept (confirmed in-engine:
--- every quadrant-grid candidate can fail this check for some room
--- layouts). A small inset keeps these points meaningfully "near the
--- corner/edge/end" while giving the margin check room to pass.
-local EXTREME_T = 0.1
-
--- Named 3x3 grid of (tx, ty) lerp fractions between top-left and
--- bottom-right, used for both the 2x2 and L-shape buckets. Order matters
--- only for readability of logs/ground-truth, not correctness.
-local QUADRANT_POINTS = {
-    { name = "corner_tl", tx = EXTREME_T, ty = EXTREME_T },
-    { name = "edge_top", tx = 0.5, ty = EXTREME_T },
-    { name = "corner_tr", tx = 1 - EXTREME_T, ty = EXTREME_T },
-    { name = "edge_left", tx = EXTREME_T, ty = 0.5 },
-    { name = "center", tx = 0.5, ty = 0.5 },
-    { name = "edge_right", tx = 1 - EXTREME_T, ty = 0.5 },
-    { name = "corner_bl", tx = EXTREME_T, ty = 1 - EXTREME_T },
-    { name = "edge_bottom", tx = 0.5, ty = 1 - EXTREME_T },
-    { name = "corner_br", tx = 1 - EXTREME_T, ty = 1 - EXTREME_T },
-}
-
----@param room Room
----@param top_left Vector
----@param bottom_right Vector
----@return {name: string, position: Vector}[]
-local function quadrant_grid_positions(room, top_left, bottom_right)
-    local positions = {}
-    for _, point in ipairs(QUADRANT_POINTS) do
-        local candidate = Vector(lerp(top_left.X, bottom_right.X, point.tx), lerp(top_left.Y, bottom_right.Y, point.ty))
-        if room:IsPositionInRoom(candidate, Config.ROOM_POSITION_MARGIN) then
-            positions[#positions + 1] = {
-                name = point.name,
-                position = room:GetClampedPosition(candidate, Config.ROOM_POSITION_MARGIN),
-            }
-        end
+-- How many "1x1 units" of area a room shape covers -- used to scale how
+-- many viewport positions get sampled (see random_room_positions) so
+-- bigger rooms get proportionally more position diversity than a 1x1.
+-- Unrecognized/future shapes default to 1 unit.
+---@param shape integer
+---@return integer
+local function room_unit_area(shape)
+    if LONG_AXIS_SHAPES[shape] then
+        return 2
     end
-    return positions
-end
-
----@param room Room
----@param top_left Vector
----@param bottom_right Vector
----@return {name: string, position: Vector}[]
-local function long_axis_positions(room, top_left, bottom_right)
-    local horizontal = room:GetGridWidth() >= room:GetGridHeight()
-    local names = { "end_a", "mid", "end_b" }
-    local positions = {}
-    for i, t in ipairs({ EXTREME_T, 0.5, 1 - EXTREME_T }) do
-        local candidate
-        if horizontal then
-            candidate = Vector(lerp(top_left.X, bottom_right.X, t), lerp(top_left.Y, bottom_right.Y, 0.5))
-        else
-            candidate = Vector(lerp(top_left.X, bottom_right.X, 0.5), lerp(top_left.Y, bottom_right.Y, t))
-        end
-        positions[#positions + 1] = {
-            name = names[i],
-            position = room:GetClampedPosition(candidate, Config.ROOM_POSITION_MARGIN),
-        }
+    if QUADRANT_GRID_SHAPES[shape] then
+        return 4
     end
-    return positions
+    return 1
 end
 
--- 1x1 rooms always fit entirely in-frame regardless of where the player
--- stands, so framing itself never changes across these positions -- unlike
--- the long-axis/quadrant-grid buckets above, this is purely for
--- player-position/pose diversity within an otherwise-identical capture.
--- First position is always the room center for a deterministic baseline
--- capture; the rest are valid random positions via
--- Positioning.SampleValidPosition, one call per extra position.
+-- Single random-sampling hot path for every room shape: framing itself
+-- doesn't change across positions for a 1x1 room, but for larger shapes it
+-- does -- either way this is purely about player-position/pose diversity
+-- within an otherwise-identical capture, and letting Room:GetRandomPosition
+-- pick anywhere valid in the room covers that better than a fixed lerp
+-- grid. First position is always the room center for a deterministic
+-- baseline capture; the rest are additional valid random positions via
+-- Positioning.SampleValidPosition, scaled by the room's unit area.
 ---@param room Room
+---@param unit_area integer
 ---@return {name: string, position: Vector}[]
-local function single_room_positions(room)
+local function random_room_positions(room, unit_area)
+    local count = Config.VIEWPORTS_PER_ROOM_UNIT * unit_area
     local positions = { { name = "center", position = room:GetCenterPos() } }
-    for i = 2, Config.VIEWPORTS_PER_1X1_ROOM do
+    for i = 2, count do
         positions[#positions + 1] = { name = "pos_" .. tostring(i), position = Positioning.SampleValidPosition(room) }
     end
     return positions
@@ -171,25 +116,7 @@ function Viewports.GetPositions(room)
     local top_left = room:GetTopLeftPos()
     local bottom_right = room:GetBottomRightPos()
     local half_extent = unit_half_extent(room, shape, top_left, bottom_right)
-
-    local positions
-    if shape == RoomShape.ROOMSHAPE_1x1 then
-        positions = single_room_positions(room)
-    elseif LONG_AXIS_SHAPES[shape] then
-        positions = long_axis_positions(room, top_left, bottom_right)
-    elseif QUADRANT_GRID_SHAPES[shape] then
-        positions = quadrant_grid_positions(room, top_left, bottom_right)
-    end
-
-    -- Any unrecognized/future shape, or a quadrant-grid room where every
-    -- candidate got filtered out by IsPositionInRoom (confirmed happens
-    -- in-engine -- corner/edge lerp points sit right at the wall boundary
-    -- and can fail the margin check for some room layouts): fall back to a
-    -- single guaranteed-valid center position rather than returning an
-    -- empty list.
-    if positions == nil or #positions == 0 then
-        positions = { { name = "center", position = room:GetCenterPos() } }
-    end
+    local positions = random_room_positions(room, room_unit_area(shape))
 
     return positions, half_extent
 end

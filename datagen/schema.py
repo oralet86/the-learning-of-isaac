@@ -197,8 +197,8 @@ class EnemyState:
 
 
 @dataclass
-class GroundTruthRecordM1:
-    """Ground truth for a single captured frame (M1 minimal schema).
+class GroundTruthRecord:
+    """Ground truth for a single captured frame.
 
     Attributes:
         image_id: Filename stem shared by the image and this record.
