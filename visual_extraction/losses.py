@@ -1,6 +1,6 @@
 """Masked multi-head loss, one criterion per `labels.HEAD_SPECS` entry.
 
-Follows `components/loss_factory.py`'s pattern of keeping per-head
+Follows `components/helpers.py`'s pattern of keeping per-head
 math isolated behind small pure functions, adapted for this problem's
 per-head masking (rather than that file's sigmoid/softmax-group split).
 """
@@ -85,7 +85,7 @@ class MultiHeadLoss(nn.Module):
     `HEAD_SPECS`), not looked up from a Python dict inside `forward` --
     keeps `forward` pure tensor ops with no dict access for
     `torch.compile` to reason about, matching
-    `components/loss_factory.py`'s `register_buffer` precedent for
+    `components/helpers.py`'s `register_buffer` precedent for
     per-head constants.
     """
 

@@ -129,13 +129,11 @@ def find_worst_predictions_per_key(
     device: torch.device,
     key_names: list[str],
     uses_channels_last: bool,
+    to_probs_fn: Callable[[tuple[torch.Tensor, torch.Tensor]], torch.Tensor],
     top_k: int = TOP_K_WORST_PREDS,
-    to_probs_fn: Callable[[torch.Tensor], torch.Tensor] | None = None,
 ) -> dict[str, list[dict[str, object]]]:
     model.eval()
     num_keys = len(key_names)
-    if to_probs_fn is None:
-        to_probs_fn = torch.sigmoid
 
     per_key_items: list[list[tuple[float, np.ndarray, float, float]]] = [
         [] for _ in range(num_keys)

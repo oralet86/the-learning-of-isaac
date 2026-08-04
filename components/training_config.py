@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from components.helpers import GroupedKeyLoss
 from components.inverse_dynamics_model import InverseDynamicsModel, ModelConfig
-from components.loss_factory import LossCriterion, make_criterion
 
 if TYPE_CHECKING:
     import torch
@@ -22,10 +22,9 @@ class TrainingConfig:
     """
 
     model_name: str
-    loss_name: str
     model_cls: type[InverseDynamicsModel] = field(repr=False)
     model_config: ModelConfig
-    criterion: LossCriterion = field(repr=False)
+    criterion: GroupedKeyLoss = field(repr=False)
     num_output_logits: int
 
     # ---- dataset-derived --------------------------------------------------
@@ -63,7 +62,6 @@ class TrainingConfig:
     def build(
         cls,
         model_name: str,
-        loss_name: str,
         window_size_override: int | None,
         label_index_override: int | None,
         stride_override: int | None,
@@ -87,12 +85,11 @@ class TrainingConfig:
         )
         stride = stride_override if stride_override is not None else model_config.stride
 
-        criterion = make_criterion(loss_name, pos_weight, device)
+        criterion = GroupedKeyLoss.from_full_pos_weight(pos_weight, device)
         num_output_logits = criterion.num_output_logits
 
         return cls(
             model_name=model_name,
-            loss_name=loss_name,
             model_cls=model_cls,
             model_config=model_config,
             criterion=criterion,
@@ -110,7 +107,6 @@ class TrainingConfig:
         """Return a JSON-safe dictionary for metrics.json."""
         return {
             "model": self.model_name,
-            "loss": self.loss_name,
             "batch_size": self.batch_size,
             "dropout": self.dropout,
             "weight_decay": self.weight_decay,

@@ -4,11 +4,31 @@ from typing import override
 
 import torch
 import torch.nn as nn
-
-from components.loss_factory import NUM_SIGMOID, NUM_SOFTMAX
+import torch.nn.functional as F  # noqa: N812
 
 _RESIDUAL_DROPOUT = 0.1
 _HEAD_HIDDEN_DIM = 32
+
+# -------- GroupedKeyLoss constants (indices into the 13-dim label vector) --------
+# Based on KEY_ORDER = ["w","a","s","d","up","down","left","right",
+#                        "e","space","q","tab","ctrl"]
+
+_SIGMOID_START: int = 8
+_SIGMOID_END: int = 13
+
+SOFTMAX_GROUPS: tuple[tuple[int, int], ...] = (
+    (1, 3),  # wasd_x:  a (idx 1), d (idx 3)
+    (0, 2),  # wasd_y:  w (idx 0), s (idx 2)
+    (6, 7),  # arrow_x: left (idx 6), right (idx 7)
+    (4, 5),  # arrow_y: up (idx 4), down (idx 5)
+)
+
+NUM_SIGMOID: int = _SIGMOID_END - _SIGMOID_START  # 5
+NUM_SOFTMAX: int = len(SOFTMAX_GROUPS)  # 4
+
+_K1_IDX_LIST: list[int] = [g[0] for g in SOFTMAX_GROUPS]
+_K2_IDX_LIST: list[int] = [g[1] for g in SOFTMAX_GROUPS]
+_LABEL_IDX_LIST: list[int] = [idx for g in SOFTMAX_GROUPS for idx in g]
 
 
 def init_resnet_weights(module: nn.Module) -> None:
@@ -86,17 +106,17 @@ class SignedDiff(nn.Module):
 class GroupedNeckHead(nn.Module):
     """Five independent neck+head branches off the shared pooled feature.
 
-    One branch per `loss_factory.GroupedKeyLoss` group: 1 sigmoid group of
-    `NUM_SIGMOID` keys, and `NUM_SOFTMAX` 3-way softmax triples. Each branch
-    is `Linear(in_features, H) -> ReLU -> Linear(H, out_dim)` so every group
+    One branch per `GroupedKeyLoss` group: 1 sigmoid group of `NUM_SIGMOID`
+    keys, and `NUM_SOFTMAX` 3-way softmax triples. Each branch is
+    `Linear(in_features, H) -> ReLU -> Linear(H, out_dim)` so every group
     gets its own nonlinear transform of the shared pooled feature rather than
     reading off one shared linear row.
 
-    The concatenated `(B, 17)` output's column order matches
-    `loss_factory.SOFTMAX_GROUPS` exactly: sigmoid keys first, then the 4
-    groups in `wasd_x, wasd_y, arrow_x, arrow_y` order. This is a positional
-    contract with `GroupedKeyLoss` that this class cannot verify at runtime
-    -- it must stay in sync if `SOFTMAX_GROUPS`'s order ever changes.
+    Returns a `(sigmoid_logits, softmax_logits)` pair rather than a
+    concatenated tensor, so the head/loss split doesn't depend on hardcoded
+    slice offsets. The softmax branches' stacking order still must match
+    `SOFTMAX_GROUPS` order (`wasd_x, wasd_y, arrow_x, arrow_y`) -- that part
+    of the contract can't be verified at runtime.
     """
 
     def __init__(self, in_features: int) -> None:
@@ -116,7 +136,119 @@ class GroupedNeckHead(nn.Module):
         )
 
     @override
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        parts = [self.sigmoid_branch(x)]
-        parts.extend(branch(x) for branch in self.softmax_branches)
-        return torch.cat(parts, dim=1)
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        sigmoid_logits = self.sigmoid_branch(x)
+        softmax_logits = torch.stack(
+            [branch(x) for branch in self.softmax_branches], dim=1
+        )
+        return sigmoid_logits, softmax_logits
+
+
+class GroupedKeyLoss(nn.Module):
+    """Loss combining 5 sigmoid keys (BCE) + 4 softmax directional triples (CE).
+
+    Usage::
+
+        loss = GroupedKeyLoss(sigmoid_pos_weight)
+        loss_fn = torch.compile(loss, mode="max-autotune")
+        ...
+        loss_value = loss_fn(logits, targets)
+        probs = loss.to_binary_probs(logits)
+    """
+
+    sigmoid_pos_weight: torch.Tensor
+    _k1_indices: torch.Tensor
+    _k2_indices: torch.Tensor
+
+    num_output_logits: int = NUM_SIGMOID + NUM_SOFTMAX * 3  # 17
+
+    def __init__(self, sigmoid_pos_weight: torch.Tensor) -> None:
+        """Args:
+        sigmoid_pos_weight: ``(5,)`` pos_weight for BCE (already on device).
+        """
+        super().__init__()
+        device = sigmoid_pos_weight.device
+        self.sigmoid_pos_weight: torch.Tensor
+        self.register_buffer("sigmoid_pos_weight", sigmoid_pos_weight)
+        self.register_buffer(
+            "_k1_indices",
+            torch.tensor(_K1_IDX_LIST, dtype=torch.long, device=device),
+            persistent=False,
+        )
+        self.register_buffer(
+            "_k2_indices",
+            torch.tensor(_K2_IDX_LIST, dtype=torch.long, device=device),
+            persistent=False,
+        )
+
+    @classmethod
+    def from_full_pos_weight(
+        cls, pos_weight: torch.Tensor, device: torch.device
+    ) -> "GroupedKeyLoss":
+        """Build from the raw ``(13,)`` pos_weight vector loaded from disk."""
+        return cls(
+            sigmoid_pos_weight=pos_weight[_SIGMOID_START:_SIGMOID_END].to(device)
+        )
+
+    def forward(
+        self,
+        logits: tuple[torch.Tensor, torch.Tensor],
+        targets: torch.Tensor,
+    ) -> torch.Tensor:
+        """Compute the compound loss — one BCE + one CE call.
+
+        Args:
+            logits: ``(sigmoid_logits: (B, 5), softmax_logits: (B, 4, 3))``.
+            targets: ``(B, 13)`` binary labels (float).
+
+        Returns:
+            Scalar loss.
+        """
+        sigmoid_logits, softmax_logits = logits
+        bs = sigmoid_logits.shape[0]
+        device = sigmoid_logits.device
+
+        loss = F.binary_cross_entropy_with_logits(
+            sigmoid_logits,
+            targets[:, _SIGMOID_START:_SIGMOID_END],
+            pos_weight=self.sigmoid_pos_weight,
+        )
+
+        group_targets = targets[:, _LABEL_IDX_LIST].view(bs, NUM_SOFTMAX, 2)
+
+        k1_active = group_targets[:, :, 0].bool()
+        k2_active = group_targets[:, :, 1].bool()
+
+        zero = torch.zeros(bs, NUM_SOFTMAX, dtype=torch.long, device=device)
+        one = torch.ones(bs, NUM_SOFTMAX, dtype=torch.long, device=device)
+        two = torch.full((bs, NUM_SOFTMAX), 2, dtype=torch.long, device=device)
+
+        class_idx = one.clone()
+        class_idx = torch.where(k1_active, zero, class_idx)
+        class_idx = torch.where(k2_active, two, class_idx)
+
+        loss = loss + F.cross_entropy(
+            softmax_logits.reshape(-1, 3), class_idx.reshape(-1)
+        )
+
+        return loss
+
+    @torch.no_grad()
+    def to_binary_probs(
+        self, logits: tuple[torch.Tensor, torch.Tensor]
+    ) -> torch.Tensor:
+        """Reconstruct ``(B, 13)`` binary probabilities from ``(sigmoid_logits, softmax_logits)``."""
+        sigmoid_logits, softmax_logits = logits
+        bs = sigmoid_logits.shape[0]
+        device = sigmoid_logits.device
+        dtype = sigmoid_logits.dtype
+
+        probs = torch.zeros(bs, 13, device=device, dtype=dtype)
+        probs[:, _SIGMOID_START:_SIGMOID_END] = torch.sigmoid(sigmoid_logits)
+
+        group_probs = F.softmax(softmax_logits, dim=-1).to(dtype=dtype)
+
+        probs[:, self._k1_indices] = group_probs[:, :, 0]
+        probs[:, self._k2_indices] = group_probs[:, :, 2]
+
+        return probs

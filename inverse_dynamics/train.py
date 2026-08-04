@@ -124,7 +124,7 @@ def make_train_step(
         x: Tensor = x_raw.to(dtype=torch.float16).div(255.0)
         if uses_channels_last:
             x = x.to(memory_format=torch.channels_last)
-        logits: Tensor = model(x)
+        logits: tuple[Tensor, Tensor] = model(x)
         loss: Tensor = criterion(logits, y)
         return loss
 
@@ -146,7 +146,7 @@ def make_eval_step(
         x: Tensor = x_raw.to(dtype=torch.float16).div(255.0)
         if uses_channels_last:
             x = x.to(memory_format=torch.channels_last)
-        logits: Tensor = model(x)
+        logits: tuple[Tensor, Tensor] = model(x)
         loss: Tensor = criterion(logits, y)
         probs: Tensor = to_probs(logits)
         return probs, loss
@@ -267,13 +267,6 @@ def main() -> None:
         default=None,
         help="Override model stride",
     )
-    parser.add_argument(
-        "--loss",
-        type=str,
-        default="grouped_ce",
-        choices=["bce", "grouped_ce"],
-        help="Loss function (default: grouped_ce)",
-    )
     args = parser.parse_args()
 
     out_dir = (
@@ -300,7 +293,6 @@ def main() -> None:
 
     cfg = TrainingConfig.build(
         model_name=args.model,
-        loss_name=args.loss,
         window_size_override=args.window_size,
         label_index_override=args.label_index,
         stride_override=args.stride,

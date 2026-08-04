@@ -57,7 +57,7 @@ class InverseDynamicsResNetLite(
         init_resnet_weights(self)
 
     @override
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         x = self.signed_diff(x)
         x = self.relu(self.bn1(self.conv1(x)))
         x = self.maxpool(x)

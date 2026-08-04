@@ -76,7 +76,7 @@ class InverseDynamicsResNetVPT(
         return self.layer4(x)
 
     @override
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         x = self.signed_diff(x)
         x = self._backbone(x)
         x = self.avgpool(x)
