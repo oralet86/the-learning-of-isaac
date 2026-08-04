@@ -3,8 +3,10 @@
 .luarc.json
 .claude
 CLAUDE.md
-
 debug*
+
+# Academic papers explored throughout this project, not in repo because of copyright law
+papers
 
 # datagen IPC scratch files and generated dataset output
 datagen/runtime/
