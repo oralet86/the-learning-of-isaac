@@ -5,10 +5,14 @@ from typing import override
 import torch
 import torch.nn as nn
 
+from components.helpers import (
+    GroupedNeckHead,
+    ResidualBlock,
+    SignedDiff,
+    init_resnet_weights,
+)
 from components.inverse_dynamics_model import InverseDynamicsModel, ModelConfig
-from components.signed_diff import SignedDiff
 
-_RESIDUAL_DROPOUT = 0.1
 _DROPOUT = 0.2
 _BATCH_SIZE = 256
 _VAL_BATCH_MULTIPLIER = 2
@@ -18,43 +22,6 @@ _ADAMW_WEIGHT_DECAY = 1e-2
 _WINDOW_SIZE = 9
 _LABEL_INDEX = 3
 _STRIDE = 2
-
-
-class ResidualBlock(nn.Module):
-    """Standard pre-activation-style residual block with 3x3 convolutions."""
-
-    def __init__(self, in_channels: int, out_channels: int, stride: int = 1) -> None:
-        super().__init__()
-        self.conv1 = nn.Conv2d(
-            in_channels,
-            out_channels,
-            kernel_size=3,
-            stride=stride,
-            padding=1,
-            bias=False,
-        )
-        self.bn1 = nn.BatchNorm2d(out_channels)
-        self.conv2 = nn.Conv2d(out_channels, out_channels, 3, 1, 1, bias=False)
-        self.bn2 = nn.BatchNorm2d(out_channels)
-        if stride != 1 or in_channels != out_channels:
-            self.downsample: nn.Module = nn.Sequential(
-                nn.Conv2d(in_channels, out_channels, 1, stride, bias=False),
-                nn.BatchNorm2d(out_channels),
-            )
-        else:
-            self.downsample = nn.Identity()
-
-        self.relu = nn.ReLU(inplace=True)
-        self.dropout = nn.Dropout2d(_RESIDUAL_DROPOUT)
-
-    @override
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        identity = self.downsample(x)
-        out = self.relu(self.bn1(self.conv1(x)))
-        out = self.bn2(self.conv2(out))
-        out = self.dropout(out)
-        out += identity
-        return self.relu(out)
 
 
 class InverseDynamicsResNetLite(
@@ -69,7 +36,6 @@ class InverseDynamicsResNetLite(
     def __init__(
         self,
         window_size: int = 2,
-        num_keys: int = 13,
         dropout: float = _DROPOUT,
     ) -> None:
         super().__init__()
@@ -86,20 +52,9 @@ class InverseDynamicsResNetLite(
         self.avgpool = nn.AdaptiveAvgPool2d(1)
         self.relu = nn.ReLU(inplace=True)
         self.dropout = nn.Dropout(dropout)
-        self.fc = nn.Linear(256, num_keys)
+        self.head = GroupedNeckHead(256)
 
-        self._init_weights()
-
-    def _init_weights(self) -> None:
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
-            elif isinstance(m, nn.BatchNorm2d):
-                nn.init.constant_(m.weight, 1)
-                nn.init.constant_(m.bias, 0)
-            elif isinstance(m, nn.Linear):
-                nn.init.normal_(m.weight, 0, 0.01)
-                nn.init.constant_(m.bias, 0)
+        init_resnet_weights(self)
 
     @override
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -113,7 +68,7 @@ class InverseDynamicsResNetLite(
         x = self.avgpool(x)
         x = torch.flatten(x, 1)
         x = self.dropout(x)
-        return self.fc(x)
+        return self.head(x)
 
     @classmethod
     @override

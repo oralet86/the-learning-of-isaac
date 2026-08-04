@@ -134,6 +134,9 @@ def center_crop_frames(frames: np.ndarray, crop_frac: float) -> np.ndarray:
         and ``crop_w = int(W * crop_frac)``, centered via floor-division
         offsets.
     """
+    if crop_frac == 1.0:
+        return frames
+
     _, h, w = frames.shape
     crop_h = int(h * crop_frac)
     crop_w = int(w * crop_frac)

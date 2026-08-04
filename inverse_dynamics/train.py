@@ -335,7 +335,7 @@ def main() -> None:
     print(f"Split: train={len(train_ds):,}  val={len(val_ds):,}  test={len(test_ds):,}")
 
     model_cls_any: Any = cfg.model_cls
-    model = model_cls_any(window_size=cfg.window_size, num_keys=cfg.num_output_logits, dropout=cfg.dropout)  # fmt: skip
+    model = model_cls_any(window_size=cfg.window_size, dropout=cfg.dropout)
     print(f"Model: {cfg.model_name}")
     if cfg.uses_channels_last:
         model = model.to(device, memory_format=torch.channels_last)  # type: ignore

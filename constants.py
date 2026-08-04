@@ -9,7 +9,7 @@ TARGET_SIZE: tuple[int, int] = (TARGET_WIDTH, TARGET_HEIGHT)
 
 # Fraction of width/height kept by the center crop applied to training frames,
 # to exclude the non-gameplay HUD border.
-FRAME_CROP_FRAC = 0.75
+FRAME_CROP_FRAC = 1.0
 
 # Duration threshold for AFK detection (idle frames removed).
 AFK_DURATION_SECONDS = 3.0
@@ -61,11 +61,11 @@ RAW_CHUNK_SIZE_GB = 5
 CHUNK_VIDEO_WORKERS = 8
 
 EPOCHS = 100
-LR = 3e-3
+LR = 2e-3
 PLATEAU_PATIENCE = 4
 LR_SCHEDULE_FACTOR = 0.2
 PATIENCE = 10
-NUM_WORKERS = 0
+NUM_WORKERS = 2
 
 WORST_PRED_BATCH_SIZE = 256
 TOP_K_WORST_PREDS = 4
