@@ -189,7 +189,7 @@ class WindowedDataset(Dataset[tuple[Tensor, Tensor]]):
         label = label_mmap[label_pos]
 
         return (
-            torch.from_numpy(frames.copy()),
+            torch.from_numpy(frames),
             torch.from_numpy(label.copy()),
         )
 
