@@ -7,6 +7,7 @@ from collections.abc import Callable  # noqa: TC003
 from contextlib import nullcontext
 from datetime import datetime
 import json
+import os
 from pathlib import Path  # noqa: TC003
 import sys
 from typing import TYPE_CHECKING, Any
@@ -86,6 +87,7 @@ def train_epoch(
     device: torch.device,
     epoch: int,
     profiler: torch.profiler.profile | None = None,
+    max_batches: int | None = None,
 ) -> dict[str, Any]:
     model.train()
     running_loss: Tensor = torch.zeros(size=(), device=device)
@@ -109,6 +111,8 @@ def train_epoch(
         n_batches += 1
         if profiler is not None:
             profiler.step()
+        if (max_batches is not None) and max_batches == n_batches:
+            break
 
     if n_batches == 0:
         return {"loss": torch.tensor(float("nan"))}
@@ -239,8 +243,8 @@ def main() -> None:
         "--mode",
         type=str,
         default=DEFAULT_MODE,
-        choices=["default", "profile", "profile_detailed", "ablation"],
-        help=f"Run mode: default, profile, profile_detailed, or ablation (default: {DEFAULT_MODE})",
+        choices=["default", "profile", "ablation"],
+        help=f"Run mode: default, profile or ablation (default: {DEFAULT_MODE})",
     )
     parser.add_argument(
         "--model",
@@ -395,8 +399,9 @@ def main() -> None:
 
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    if args.mode in ("profile", "profile_detailed"):
-        detailed = args.mode == "profile_detailed"
+    if args.mode == "profile":
+        os.environ["TORCH_LOGS_OUT"] = str(out_dir / "compile_log.txt")
+        torch._logging.set_logs(cudagraphs=True, recompiles=True)
         prof = torch.profiler.profile(
             activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
             schedule=torch.profiler.schedule(
@@ -405,13 +410,13 @@ def main() -> None:
                 active=PROFILE_STEPS,
                 repeat=1,
             ),
-            record_shapes=detailed,
-            profile_memory=detailed,
+            record_shapes=True,
+            profile_memory=True,
         )
         prof_ctx: Any = prof
         print(
             f"Profiling enabled: wait={PROFILE_WAIT} warmup={PROFILE_WARMUP} "
-            f"active={PROFILE_STEPS} detailed={detailed}"
+            f"active={PROFILE_STEPS}"
         )
     else:
         prof = None
@@ -440,6 +445,9 @@ def main() -> None:
                 device,
                 epoch,
                 profiler=prof,
+                max_batches=None
+                if (prof is None)
+                else (PROFILE_WAIT + PROFILE_WARMUP + PROFILE_STEPS),
             )
         if prof is not None:
             prof.stop()
@@ -447,7 +455,13 @@ def main() -> None:
             table_path: Path = out_dir / "averages_table.txt"
             prof.export_chrome_trace(path=str(trace_path))
             with open(file=table_path, mode="w+") as f:
-                f.write(prof.key_averages().table(sort_by="cuda_time_total"))
+                f.write(
+                    prof.key_averages().table(
+                        sort_by="cuda_time_total",
+                        max_name_column_width=200,
+                        max_shapes_column_width=200,
+                    )
+                )
 
             print(f"Profiler trace saved to {trace_path}")
             prof_ctx = nullcontext()
