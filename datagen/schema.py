@@ -144,24 +144,27 @@ class ActiveItem:
 
     Attributes:
         held: Whether an active item was rolled this visit. Kept as an
-            explicit field (rather than inferring "not held" from `item_id`
+            explicit field (rather than inferring "not held" from `charge`
             being ``None``) because the mod's vendored JSON encoder
             serializes a Lua table with every field nil as ``[]`` rather
             than ``{}`` -- without a field that's always present, "no
             active item" would come through as an empty list, not an
             object.
-        item_id: The ``CollectibleType`` id held, or ``None`` if `held` is
-            ``False``.
         charge: Current charge normalized to ``[0, 1]`` (current charge /
             that item's own ``MaxCharges``, with items that have no charge
             bar at all treated as fully charged), or ``None`` if `held` is
             ``False``. The raw charge/max-charge pair isn't logged --
             downstream consumers should treat every active item as
             effectively "1 charge bar" regardless of its real max charge.
+
+    The mod's own ``ItemSpawning.RollActiveItem`` also tracks which
+    ``CollectibleType`` id was rolled (needed to actually apply it via
+    ``AddCollectible``), but that id isn't collected here -- no training
+    head reads it (see ``visual_extraction/labels.py``'s
+    ``encode_active_item``), same as `ItemDelta.action` above.
     """
 
     held: bool
-    item_id: int | None
     charge: float | None
 
 

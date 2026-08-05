@@ -20,7 +20,7 @@ def _base_record(**overrides: Any) -> dict[str, Any]:  # noqa: ANN401
         "player": {"frame_position": [0.25, 0.75]},
         "player2": None,
         "item_delta": {"action": 1},
-        "active_item": {"held": False, "item_id": None, "charge": None},
+        "active_item": {"held": False, "charge": None},
         "currency": {"coins": 5, "bombs": 2, "keys": 1},
         "consumable": {
             "kind": 0,
@@ -67,22 +67,19 @@ def test_item_delta_reads_action_straight_through() -> None:
     assert mask.item() == 1.0
 
 
-def test_active_item_not_held_masks_id_and_charge() -> None:
+def test_active_item_not_held_masks_charge() -> None:
     heads = labels.encode_active_item(
-        _base_record(active_item={"held": False, "item_id": None, "charge": None})
+        _base_record(active_item={"held": False, "charge": None})
     )
     assert heads["held"][0].item() == 0.0
-    assert heads["id"][1].item() == 0.0
     assert heads["charge"][1].item() == 0.0
 
 
-def test_active_item_held_unmasks_id_and_charge() -> None:
+def test_active_item_held_unmasks_charge() -> None:
     heads = labels.encode_active_item(
-        _base_record(active_item={"held": True, "item_id": 105, "charge": 0.5})
+        _base_record(active_item={"held": True, "charge": 0.5})
     )
     assert heads["held"][0].item() == 1.0
-    assert heads["id"][0].item() == 105
-    assert heads["id"][1].item() == 1.0
     assert heads["charge"][0].item() == pytest.approx(0.5)
     assert heads["charge"][1].item() == 1.0
 

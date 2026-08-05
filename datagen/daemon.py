@@ -114,7 +114,6 @@ def _process_one(
         item_delta=ItemDelta(action=item_delta_raw["action"]),
         active_item=ActiveItem(
             held=active_item_raw["held"],
-            item_id=active_item_raw.get("item_id"),
             charge=active_item_raw.get("charge"),
         ),
         currency=CurrencyState(
@@ -213,7 +212,7 @@ def run_daemon(config: RunConfig, stream: StreamGame) -> None:
                     record.seed,
                     record.stage_bucket,
                     record.item_delta.action,
-                    record.active_item.item_id,
+                    record.active_item.held,
                     record.consumable.kind,
                     len(record.enemies),
                     len(record.doors),

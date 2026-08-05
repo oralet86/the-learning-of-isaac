@@ -36,7 +36,7 @@ def _raw_ground_truth(**overrides: Any) -> dict[str, Any]:  # noqa: ANN401
         "stage_bucket": 2,
         "player": {"frame_position": [0.5, 0.5]},
         "item_delta": {"action": 1},
-        "active_item": {"held": False, "item_id": None, "charge": None},
+        "active_item": {"held": False, "charge": None},
         "currency": {"coins": 5, "bombs": 2, "keys": 1},
         "consumable": {
             "kind": 2,

@@ -236,20 +236,22 @@ end
 -- queried state" value like every other field in this file rather than a
 -- stale intent snapshot. `charge` is normalized to [0, 1] the same way
 -- ItemSpawning.RollActiveItem does (see its docstring for the MaxCharges
--- == 0 special case).
+-- == 0 special case). `item_id` itself isn't exported below -- no training
+-- head reads it (see visual_extraction/labels.py's `encode_active_item`) --
+-- same reasoning as `item_delta`'s `action`-only export just below.
 ---@param player EntityPlayer
 ---@return table
 local function collect_active_item(player)
     local item_id = player:GetActiveItem(ActiveSlot.SLOT_PRIMARY)
     if item_id == CollectibleType.COLLECTIBLE_NULL then
-        return { held = false, item_id = nil, charge = nil }
+        return { held = false, charge = nil }
     end
 
     local max_charge = Isaac.GetItemConfig():GetCollectible(item_id).MaxCharges
     local charge = player:GetActiveCharge(ActiveSlot.SLOT_PRIMARY)
     local normalized_charge = max_charge == 0 and 1.0 or charge / max_charge
 
-    return { held = true, item_id = item_id, charge = normalized_charge }
+    return { held = true, charge = normalized_charge }
 end
 
 -- Builds ground truth by querying live player/game state (never

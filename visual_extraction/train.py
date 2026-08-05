@@ -117,7 +117,7 @@ def _dummy_record() -> dict[str, object]:
         "player": {"frame_position": [0.5, 0.5]},
         "player2": None,
         "item_delta": {"action": 0},
-        "active_item": {"held": False, "item_id": None, "charge": None},
+        "active_item": {"held": False, "charge": None},
         "currency": {"coins": 0, "bombs": 0, "keys": 0},
         "consumable": {
             "kind": 0,

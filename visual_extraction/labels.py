@@ -16,7 +16,7 @@ items 1, 2, 4, 5, 6 are still open). The expected shape, once those land::
         "player": {"frame_position": [float, float]},  # each in [0, 1]
         "player2": {"frame_position": [float, float]} | None,
         "item_delta": {"action": int},  # 0=none, 1=add, 2=remove
-        "active_item": {"held": bool, "item_id": int | None, "charge": float | None},
+        "active_item": {"held": bool, "charge": float | None},
         "currency": {"coins": int, "bombs": int, "keys": int},
         "consumable": {
             "kind": int,  # 0=none, 1=card, 2=pill
@@ -66,9 +66,6 @@ import torch
 NUM_STAGE_BUCKETS = 10
 NUM_ITEM_DELTA_ACTIONS = 3  # 0=none, 1=add, 2=remove -- MOD_CHANGES_NEEDED.md #5
 NUM_CONSUMABLE_KINDS = 3  # 0=none, 1=card, 2=pill -- MOD_CHANGES_NEEDED.md #5
-NUM_COLLECTIBLES = (
-    733  # enums/CollectibleType.html -- highest id 732, NUM_COLLECTIBLES=733
-)
 NUM_CARDS = 98  # enums/Card.html -- NUM_CARDS=98 (tarot cards, runes, soul stones share this space)
 NUM_PILL_COLORS = 16  # enums/PillColor.html -- 0-13 standard + PILL_GOLD=15
 PILL_COLOR_MASK = 2047  # enums/PillColor.html -- mask off PILL_GIANT_FLAG (1 << 11) before classifying
@@ -126,8 +123,6 @@ class LabelBundle:
 
     active_item_held: torch.Tensor
     active_item_held_mask: torch.Tensor
-    active_item_id: torch.Tensor
-    active_item_id_mask: torch.Tensor
     active_item_charge: torch.Tensor
     active_item_charge_mask: torch.Tensor
 
@@ -188,15 +183,18 @@ def encode_item_delta(record: dict[str, Any]) -> tuple[torch.Tensor, torch.Tenso
 def encode_active_item(
     record: dict[str, Any],
 ) -> dict[str, tuple[torch.Tensor, torch.Tensor]]:
-    """`held`/`item_id`/`charge`, with `item_id`/`charge` masked by `held`."""
+    """`held`/`charge`, with `charge` masked by `held`.
+
+    The ground-truth contract no longer carries which specific collectible
+    is active -- classifying that from a HUD icon isn't a head this model
+    predicts; `held`/`charge` are.
+    """
     active_item = record["active_item"]
     held = active_item["held"]
     held_mask = _flag(held)
-    item_id = active_item["item_id"] if held else 0
     charge = active_item["charge"] if held else 0.0
     return {
         "held": (_flag(held), _ones()),
-        "id": (torch.tensor(item_id, dtype=torch.long), held_mask),
         "charge": (torch.tensor(charge, dtype=torch.float32), held_mask),
     }
 
@@ -394,7 +392,6 @@ HEAD_SPECS: tuple[HeadSpec, ...] = (
     _head("stage", NUM_STAGE_BUCKETS, "classification"),
     _head("item_delta_action", NUM_ITEM_DELTA_ACTIONS, "classification"),
     _head("active_item_held", 1, "binary"),
-    _head("active_item_id", NUM_COLLECTIBLES, "classification"),
     _head("active_item_charge", 1, "bounded_regression"),
     _head("currency", NUM_CURRENCY, "regression"),
     _head("consumable_kind", NUM_CONSUMABLE_KINDS, "classification"),
@@ -444,8 +441,6 @@ def encode_record(record: dict[str, Any]) -> LabelBundle:
         item_delta_action_mask=action_mask,
         active_item_held=active_item["held"][0],
         active_item_held_mask=active_item["held"][1],
-        active_item_id=active_item["id"][0],
-        active_item_id_mask=active_item["id"][1],
         active_item_charge=active_item["charge"][0],
         active_item_charge_mask=active_item["charge"][1],
         currency=currency_target,

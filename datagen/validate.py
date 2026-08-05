@@ -202,12 +202,6 @@ def _validate_ranges(record: dict[str, Any]) -> list[str]:
         held = active_item.get("held")
         if held is not None and not _is_bool(held):
             errors.append(f"active_item.held: expected a bool, got {held!r}")
-        if held is True:
-            _bounded(
-                active_item.get("item_id"),
-                "active_item.item_id",
-                labels.NUM_COLLECTIBLES,
-            )
 
     health = record.get("health")
     if isinstance(health, dict):
