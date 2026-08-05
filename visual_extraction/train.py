@@ -22,6 +22,8 @@ import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+from components.ground_truth_losses import MultiHeadLoss
+from components.ground_truth_net import USES_CHANNELS_LAST, GroundTruthNet
 from visual_extraction.dataset import (
     IMAGE_HEIGHT,
     IMAGE_WIDTH,
@@ -29,8 +31,6 @@ from visual_extraction.dataset import (
     collate_label_bundles,
 )
 from visual_extraction.labels import LabelBundle, encode_record
-from visual_extraction.losses import MultiHeadLoss
-from visual_extraction.network import USES_CHANNELS_LAST, GroundTruthNet
 
 logger = logging.getLogger(__name__)
 

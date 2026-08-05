@@ -367,16 +367,27 @@ class HeadSpec:
             optional) means `network.py`'s forward loop applies it
             unconditionally, with no per-head `is None` branching to worry
             about under `torch.compile`.
+        spatial: Whether this head predicts a per-grid-cell output (pooled
+            from a `DETECTION_GRID_ROWS x DETECTION_GRID_COLS` feature map
+            via a small conv neck) rather than a single per-sample vector
+            (pooled to 1x1 via a linear neck). `network.py` partitions
+            `HEAD_SPECS` on this flag once at construction time -- still a
+            compile-time-constant attribute, not a runtime name comparison.
     """
 
     name: str
     out_dim: int
     kind: str
     pred_shape: tuple[int, ...]
+    spatial: bool = False
 
 
 def _head(
-    name: str, out_dim: int, kind: str, pred_shape: tuple[int, ...] | None = None
+    name: str,
+    out_dim: int,
+    kind: str,
+    pred_shape: tuple[int, ...] | None = None,
+    spatial: bool = False,
 ) -> HeadSpec:
     """Builds a `HeadSpec`, defaulting `pred_shape` to the flat `(out_dim,)` shape.
 
@@ -385,7 +396,7 @@ def _head(
     code path, so it has no bearing on `torch.compile`/graph-capture
     behavior either way.
     """
-    return HeadSpec(name, out_dim, kind, pred_shape or (out_dim,))
+    return HeadSpec(name, out_dim, kind, pred_shape or (out_dim,), spatial)
 
 
 HEAD_SPECS: tuple[HeadSpec, ...] = (
@@ -412,12 +423,14 @@ HEAD_SPECS: tuple[HeadSpec, ...] = (
         3 * DETECTION_GRID_ROWS * DETECTION_GRID_COLS,
         "classification",
         pred_shape=(3, DETECTION_GRID_ROWS, DETECTION_GRID_COLS),
+        spatial=True,
     ),
     _head(
         "detection_offset",
         DETECTION_GRID_ROWS * DETECTION_GRID_COLS * 2,
         "bounded_regression",
         pred_shape=(DETECTION_GRID_ROWS, DETECTION_GRID_COLS, 2),
+        spatial=True,
     ),
 )
 
