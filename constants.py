@@ -3,8 +3,8 @@ from pathlib import Path
 SEED = 42
 
 # Target resolution for training data. Video is resized to this during preprocessing.
-TARGET_WIDTH = 320
-TARGET_HEIGHT = 180
+TARGET_WIDTH = 224
+TARGET_HEIGHT = 128
 TARGET_SIZE: tuple[int, int] = (TARGET_WIDTH, TARGET_HEIGHT)
 
 # Fraction of width/height kept by the center crop applied to training frames,
@@ -65,7 +65,7 @@ LR = 2e-3
 PLATEAU_PATIENCE = 4
 LR_SCHEDULE_FACTOR = 0.2
 PATIENCE = 10
-NUM_WORKERS = 2
+NUM_WORKERS = 4
 
 WORST_PRED_BATCH_SIZE = 256
 TOP_K_WORST_PREDS = 4
@@ -75,9 +75,9 @@ RUN_TIMESTAMP_FORMAT = "%Y%m%d_%H%M"
 
 # Profiling
 
-PROFILE_WAIT = 5
-PROFILE_WARMUP = 5
-PROFILE_STEPS = 100
+PROFILE_WAIT = 50
+PROFILE_WARMUP = 50
+PROFILE_STEPS = 200
 
 # Run modes
 

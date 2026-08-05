@@ -13,24 +13,24 @@ from components.helpers import (
 )
 from components.inverse_dynamics_model import InverseDynamicsModel, ModelConfig
 
-_DROPOUT = 0.0
-_BATCH_SIZE = 256
-_VAL_BATCH_MULTIPLIER = 2
+_DROPOUT = 0.1
+_BATCH_SIZE = 512
+_VAL_BATCH_MULTIPLIER = 1
 _ADAMW_WEIGHT_DECAY = 1e-2
 
 _WINDOW_SIZE = 9
 _LABEL_INDEX = 3
 _STRIDE = 2
 
-_POOL_SIZE = 4
-_LAYER4_CHANNELS = 96
-_POOLED_DIM = _POOL_SIZE * _POOL_SIZE * _LAYER4_CHANNELS  # 1536
+_POOL_SIZE = 5
+_LAYER4_CHANNELS = 128
+_POOLED_DIM = _POOL_SIZE * _POOL_SIZE * _LAYER4_CHANNELS
 
 
 class InverseDynamicsResNetVPT(
     InverseDynamicsModel, nn.Module, model_name="resnet_vpt"
 ):
-    """Narrower ResNet with a 4x4-pooled, dropout-free head.
+    """Narrower ResNet with a 4x4-pooled head.
 
     Four residual stages (16->32, 32->64, 64->64, 64->96), matching
     `InverseDynamicsResNetLite`'s 16-channel stem width but narrower at every
@@ -38,13 +38,13 @@ class InverseDynamicsResNetVPT(
     flatten, this keeps the head's `in_features` fixed at `_POOLED_DIM`
     regardless of input resolution, so (unlike the earlier full-flatten
     version of this model) no shape inference is needed at construction time.
-    No dropout is applied after pooling (see `_DROPOUT`'s comment);
-    `ResidualBlock`'s internal dropout still regularizes the backbone.
+    Dropout is applied after pooling, same as `InverseDynamicsResNetLite`.
     """
 
     def __init__(
         self,
         window_size: int = 2,
+        dropout: float = _DROPOUT,
     ) -> None:
         super().__init__()
         self.signed_diff = SignedDiff()
@@ -54,11 +54,12 @@ class InverseDynamicsResNetVPT(
 
         self.layer1 = ResidualBlock(16, 32, stride=1)
         self.layer2 = ResidualBlock(32, 64, stride=2)
-        self.layer3 = ResidualBlock(64, 64, stride=2)
-        self.layer4 = ResidualBlock(64, _LAYER4_CHANNELS, stride=2)
+        self.layer3 = ResidualBlock(64, 96, stride=2)
+        self.layer4 = ResidualBlock(96, _LAYER4_CHANNELS, stride=2)
 
         self.relu = nn.ReLU(inplace=True)
         self.avgpool = nn.AdaptiveAvgPool2d((_POOL_SIZE, _POOL_SIZE))
+        self.dropout = nn.Dropout(dropout)
         self.head = GroupedNeckHead(_POOLED_DIM)
 
         init_resnet_weights(self)
@@ -81,6 +82,7 @@ class InverseDynamicsResNetVPT(
         x = self._backbone(x)
         x = self.avgpool(x)
         x = torch.flatten(x, 1)
+        x = self.dropout(x)
         return self.head(x)
 
     @classmethod
