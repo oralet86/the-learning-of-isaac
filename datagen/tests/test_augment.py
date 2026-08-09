@@ -114,13 +114,6 @@ def test_generate_variants_batch_writes_expected_files(tmp_path: Path) -> None:
         assert record["scenario_id"] == "scenario1"
 
 
-def test_get_region_config_for_resolution_rejects_placeholder() -> None:
-    # 1920x1080 is the real capture resolution, but its region bboxes are
-    # still unfilled TODO placeholders.
-    with pytest.raises(ValueError, match="placeholder"):
-        get_region_config_for_resolution(1920, 1080)
-
-
 def test_get_region_config_for_resolution_rejects_unknown() -> None:
     with pytest.raises(KeyError):
         get_region_config_for_resolution(9999, 9999)

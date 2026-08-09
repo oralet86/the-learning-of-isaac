@@ -30,6 +30,7 @@ from constants import (
     TARGET_HEIGHT,
     TARGET_WIDTH,
 )
+from scripts.downscale import downscale_video_stream
 
 
 @dataclass
@@ -143,27 +144,7 @@ def _decode_video(
     Returns (Popen, frame_size_in_bytes).  Each read of ``frame_size`` bytes
     from ``proc.stdout`` yields one grayscale frame at native FPS.
     """
-    cmd = [
-        "ffmpeg",
-        "-nostdin",
-        "-loglevel",
-        "error",
-        "-i",
-        str(video_path),
-        "-an",
-        "-vf",
-        f"scale={target_w}:{target_h},format=gray",
-        "-vsync",
-        "0",
-        "-f",
-        "rawvideo",
-        "-pix_fmt",
-        "gray",
-        "pipe:1",
-    ]
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-    frame_size = target_w * target_h
-    return proc, frame_size
+    return downscale_video_stream(video_path, target_w, target_h, grayscale=True)
 
 
 # ---------------------------------------------------------------------------

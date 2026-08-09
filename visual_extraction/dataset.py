@@ -14,11 +14,11 @@ import hashlib
 import json
 from typing import TYPE_CHECKING, Literal
 
-from PIL import Image
 import torch
 from torch.utils.data import Dataset
 import torchvision.transforms.functional as tvf
 
+from scripts.downscale import Interpolation, downscale_image_file
 from visual_extraction.labels import LabelBundle, encode_record
 
 if TYPE_CHECKING:
@@ -85,8 +85,12 @@ class GroundTruthDataset(Dataset[tuple[torch.Tensor, LabelBundle]]):
         record = json.loads(label_path.read_text())
 
         image_path = self.images_dir / f"{record['image_id']}.png"
-        image = Image.open(image_path).convert("RGB")
-        image = image.resize((self.image_width, self.image_height))
+        image = downscale_image_file(
+            image_path,
+            self.image_width,
+            self.image_height,
+            interpolation=Interpolation.CUBIC,
+        )
         image_tensor = tvf.to_tensor(image)
 
         return image_tensor, encode_record(record)
