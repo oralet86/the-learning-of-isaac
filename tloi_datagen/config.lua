@@ -3,13 +3,13 @@ local Config = {}
 
 -- Ticks to wait after posing a scene before treating it as "settled" for
 -- idle-mode capture.
-Config.SETTLE_TICKS = 30
+Config.SETTLE_TICKS = 120
 
 -- Ticks to wait after moving the player to the next camera-viewport
 -- position within the same room visit, before capturing. Shorter than
 -- SETTLE_TICKS since only the player/camera position changed -- doors,
 -- items, and health were already posed and settled for this room visit.
-Config.VIEWPORT_SETTLE_TICKS = 10
+Config.VIEWPORT_SETTLE_TICKS = 40
 
 -- Extra settle ticks added on top of SETTLE_TICKS/SETTLE_TICKS_ANIMATED for
 -- RoomType.ROOM_BOSS. Room:SetClear(true) (see pose_and_settle) suppresses
@@ -29,8 +29,8 @@ Config.BOSS_SETTLE_TICKS_BONUS = 150
 -- CAPTURE_MODE_ANIMATED_PCT chance of "animated", so both modes appear
 -- within a single run.
 Config.CAPTURE_MODE_ANIMATED_PCT = 0.3
-Config.SETTLE_TICKS_ANIMATED = 5
-Config.VIEWPORT_SETTLE_TICKS_ANIMATED = 2
+Config.SETTLE_TICKS_ANIMATED = 40
+Config.VIEWPORT_SETTLE_TICKS_ANIMATED = 40
 
 -- Base number of camera-viewport positions to sample per "1x1 unit" of a
 -- room's area (see scenario/viewports.lua's ROOM_UNIT_AREA) -- e.g. a 1x1

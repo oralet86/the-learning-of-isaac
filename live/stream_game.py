@@ -38,16 +38,12 @@ from typing import Self
 import numpy as np
 import obsws_python as obs
 from obsws_python.error import OBSSDKError
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QCloseEvent, QFont, QImage, QPixmap
-from PySide6.QtWidgets import (
-    QApplication,
-    QLabel,
-    QMainWindow,
-    QSizePolicy,
-    QVBoxLayout,
-    QWidget,
-)
+
+# PySide6 is only needed for --debug mode's Qt viewer (see main()) -- kept
+# out of the module-level imports so importing StreamGame alone (the
+# capture daemon's actual hot path, see datagen/daemon.py) never pulls in
+# Qt at all. That keeps PySide6 out of environments where the daemon
+# never runs --debug.
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -57,6 +53,8 @@ DEFAULT_VIDEO_DEVICE = "/dev/video2"
 FRAME_READ_CHUNK = 65536
 FRAME_QUEUE_SIZE = 4
 DEVICE_SETTLE_S = 0.3
+OBS_CONNECT_RETRY_BACKOFF_S = 1.0
+OBS_CONNECT_RETRY_BACKOFF_MAX_S = 30.0
 DEBUG_REFRESH_MS = 16
 INFO_FONT_SIZE = 11
 VERBOSE_LOG_INTERVAL_S = 5.0
@@ -177,8 +175,11 @@ def _launch_ffmpeg(device: str, fps: int) -> subprocess.Popen[bytes]:
         "rawvideo",
         "-pix_fmt",
         "rgb24",
-        "-vsync",
-        "0",
+        # Passthrough (never duplicate/drop frames to match a target rate)
+        # -- the modern replacement for the removed global `-vsync` option,
+        # which newer ffmpeg builds reject outright ("Unrecognized option").
+        "-fps_mode",
+        "passthrough",
         "pipe:1",
     ]
     return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -275,7 +276,6 @@ class StreamGame:
 
         Raises:
             FileNotFoundError: if the v4l2 device does not exist.
-            ConnectionError: if the OBS WebSocket is unreachable.
             RuntimeError: if the virtual camera fails to start.
         """
         if self._started:
@@ -287,18 +287,31 @@ class StreamGame:
                 f"Run: sudo modprobe v4l2loopback exclusive_caps=0"
             )
 
-        # Step 1 — connect OBS.
-        try:
-            self._cl = obs.ReqClient(
-                host=self._host,
-                port=self._port,
-                password=self._password,
-                timeout=5,
-            )
-        except (OBSSDKError, OSError) as e:
-            raise ConnectionError(
-                f"Cannot connect to OBS at {self._host}:{self._port} — {e}"
-            ) from e
+        # Step 1 — connect OBS, retrying forever with doubling backoff
+        # (capped at OBS_CONNECT_RETRY_BACKOFF_MAX_S). When OBS and this
+        # daemon are launched at the same time with no ordering between
+        # them, OBS's WebSocket server isn't listening for the first
+        # several seconds while it loads its Scene/plugin state -- a single
+        # connection attempt races that and reliably loses. Retrying forever
+        # rather than giving up after some deadline matches the capture
+        # daemon's "never crash on a transient OBS hiccup" requirement.
+        backoff = OBS_CONNECT_RETRY_BACKOFF_S
+        while True:
+            try:
+                self._cl = obs.ReqClient(
+                    host=self._host,
+                    port=self._port,
+                    password=self._password,
+                    timeout=5,
+                )
+                break
+            except (OBSSDKError, OSError) as e:
+                print(
+                    f"  [stream] Couldn't connect to OBS websocket ({e}), "
+                    f"trying again in {backoff:.0f}s..."
+                )
+                time.sleep(backoff)
+                backoff = min(backoff * 2, OBS_CONNECT_RETRY_BACKOFF_MAX_S)
 
         # Step 2 — start virtual camera (so v4l2 device has a signal).
         self._start_virtual_cam()
@@ -536,108 +549,6 @@ class StreamGame:
 
 
 # ---------------------------------------------------------------------------
-# Qt debug viewer
-# ---------------------------------------------------------------------------
-
-
-class StreamViewer(QMainWindow):
-    """Live view of StreamGame frames with overlaid stats."""
-
-    def __init__(self, stream: StreamGame) -> None:
-        super().__init__()
-        self._stream = stream
-        self._stream.start()
-
-        self._current_array: np.ndarray | None = None
-
-        self.setWindowTitle("stream_game — live")
-        self.setStyleSheet("background-color: #1a1a2e;")
-
-        central = QWidget()
-        self.setCentralWidget(central)
-        layout = QVBoxLayout(central)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-
-        # Info bar
-        self._info_label = QLabel()
-        self._info_label.setFont(QFont("monospace", INFO_FONT_SIZE))
-        self._info_label.setStyleSheet(
-            "color: #00ff88; background-color: #0d0d1a; padding: 4px 8px;"
-        )
-        self._info_label.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
-        )
-        layout.addWidget(self._info_label)
-
-        # Frame display
-        self._frame_label = QLabel()
-        self._frame_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._frame_label.setMinimumSize(100, 100)
-        self._frame_label.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
-        )
-        self._frame_label.setStyleSheet("background-color: #000000;")
-        layout.addWidget(self._frame_label)
-
-        # Timer
-        self._timer = QTimer()
-        self._timer.timeout.connect(self._tick)
-        self._timer.start(DEBUG_REFRESH_MS)
-
-        # Initial window size
-        self.resize(self._stream._width, self._stream._height + 30)
-
-    def _tick(self) -> None:
-        """Poll for a new frame and refresh the display."""
-        frame = self._stream.get_frame(timeout=0.0)
-        if frame is None:
-            return
-
-        self._current_array = frame
-        display = (
-            (frame * 255).astype(np.uint8)
-            if self._stream._normalize
-            else frame.astype(np.uint8)
-        )
-        h, w, _ = display.shape
-
-        qimg = QImage(display.tobytes(), w, h, w * 3, QImage.Format.Format_RGB888)
-        pixmap = QPixmap.fromImage(qimg)
-
-        label_size = self._frame_label.size()
-        scaled = pixmap.scaled(
-            label_size,
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        )
-        self._frame_label.setPixmap(scaled)
-
-        self._update_info()
-
-    def _update_info(self) -> None:
-        """Refresh the info bar."""
-        fps = self._stream.effective_fps
-        elapsed = self._stream.elapsed
-        shape_str = f"({self._stream._height}, {self._stream._width}, 3)"
-        norm = "norm" if self._stream._normalize else "raw"
-
-        self._info_label.setText(
-            f"Frame: {self._stream.frame_count:>6}   "
-            f"FPS: {fps:5.1f}   "
-            f"Shape: {shape_str}   "
-            f"float16 ({norm})   "
-            f"Elapsed: {elapsed:.0f}s"
-        )
-
-    def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
-        """Stop the stream and timer on window close."""
-        self._timer.stop()
-        self._stream.stop()
-        super().closeEvent(event)
-
-
-# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -695,6 +606,117 @@ def main() -> None:
     )
 
     if args.debug:
+        # Imported here, not at module level -- see the import block's
+        # comment. Only reached when --debug is actually passed.
+        from PySide6.QtCore import Qt, QTimer
+        from PySide6.QtGui import QCloseEvent, QFont, QImage, QPixmap
+        from PySide6.QtWidgets import (
+            QApplication,
+            QLabel,
+            QMainWindow,
+            QSizePolicy,
+            QVBoxLayout,
+            QWidget,
+        )
+
+        class StreamViewer(QMainWindow):
+            """Live view of StreamGame frames with overlaid stats."""
+
+            def __init__(self, stream: StreamGame) -> None:
+                super().__init__()
+                self._stream = stream
+                self._stream.start()
+
+                self._current_array: np.ndarray | None = None
+
+                self.setWindowTitle("stream_game — live")
+                self.setStyleSheet("background-color: #1a1a2e;")
+
+                central = QWidget()
+                self.setCentralWidget(central)
+                layout = QVBoxLayout(central)
+                layout.setContentsMargins(0, 0, 0, 0)
+                layout.setSpacing(0)
+
+                # Info bar
+                self._info_label = QLabel()
+                self._info_label.setFont(QFont("monospace", INFO_FONT_SIZE))
+                self._info_label.setStyleSheet(
+                    "color: #00ff88; background-color: #0d0d1a; padding: 4px 8px;"
+                )
+                self._info_label.setSizePolicy(
+                    QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+                )
+                layout.addWidget(self._info_label)
+
+                # Frame display
+                self._frame_label = QLabel()
+                self._frame_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                self._frame_label.setMinimumSize(100, 100)
+                self._frame_label.setSizePolicy(
+                    QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+                )
+                self._frame_label.setStyleSheet("background-color: #000000;")
+                layout.addWidget(self._frame_label)
+
+                # Timer
+                self._timer = QTimer()
+                self._timer.timeout.connect(self._tick)
+                self._timer.start(DEBUG_REFRESH_MS)
+
+                # Initial window size
+                self.resize(self._stream._width, self._stream._height + 30)
+
+            def _tick(self) -> None:
+                """Poll for a new frame and refresh the display."""
+                frame = self._stream.get_frame(timeout=0.0)
+                if frame is None:
+                    return
+
+                self._current_array = frame
+                display = (
+                    (frame * 255).astype(np.uint8)
+                    if self._stream._normalize
+                    else frame.astype(np.uint8)
+                )
+                h, w, _ = display.shape
+
+                qimg = QImage(
+                    display.tobytes(), w, h, w * 3, QImage.Format.Format_RGB888
+                )
+                pixmap = QPixmap.fromImage(qimg)
+
+                label_size = self._frame_label.size()
+                scaled = pixmap.scaled(
+                    label_size,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+                self._frame_label.setPixmap(scaled)
+
+                self._update_info()
+
+            def _update_info(self) -> None:
+                """Refresh the info bar."""
+                fps = self._stream.effective_fps
+                elapsed = self._stream.elapsed
+                shape_str = f"({self._stream._height}, {self._stream._width}, 3)"
+                norm = "norm" if self._stream._normalize else "raw"
+
+                self._info_label.setText(
+                    f"Frame: {self._stream.frame_count:>6}   "
+                    f"FPS: {fps:5.1f}   "
+                    f"Shape: {shape_str}   "
+                    f"float16 ({norm})   "
+                    f"Elapsed: {elapsed:.0f}s"
+                )
+
+            def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
+                """Stop the stream and timer on window close."""
+                self._timer.stop()
+                self._stream.stop()
+                super().closeEvent(event)
+
         app = QApplication(sys.argv)
         viewer = StreamViewer(stream)
         viewer.show()
