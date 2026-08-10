@@ -37,6 +37,18 @@ local QUADRANT_GRID_SHAPES = {
     [RoomShape.ROOMSHAPE_LBR] = true,
 }
 
+-- L-shape rotations specifically: the bounding-box center is the inner
+-- corner, which sits inside the missing quadrant's wall -- Room:GetCenterPos()
+-- is not a valid floor position for these, so they get a sampled valid
+-- position for the baseline "center" viewport instead (see
+-- random_room_positions).
+local L_SHAPE_SHAPES = {
+    [RoomShape.ROOMSHAPE_LTL] = true,
+    [RoomShape.ROOMSHAPE_LTR] = true,
+    [RoomShape.ROOMSHAPE_LBL] = true,
+    [RoomShape.ROOMSHAPE_LBR] = true,
+}
+
 -- How many "1x1 units" of area a room shape covers -- used to scale how
 -- many viewport positions get sampled (see random_room_positions) so
 -- bigger rooms get proportionally more position diversity than a 1x1.
@@ -59,14 +71,20 @@ end
 -- within an otherwise-identical capture, and letting Room:GetRandomPosition
 -- pick anywhere valid in the room covers that better than a fixed lerp
 -- grid. First position is always the room center for a deterministic
--- baseline capture; the rest are additional valid random positions via
--- Positioning.SampleValidPosition, scaled by the room's unit area.
+-- baseline capture -- except for L-shape rooms, where the geometric center
+-- is inside the missing quadrant's wall, so a sampled valid position is
+-- used instead (see L_SHAPE_SHAPES).
 ---@param room Room
 ---@param unit_area integer
+---@param shape integer
 ---@return {name: string, position: Vector}[]
-local function random_room_positions(room, unit_area)
+local function random_room_positions(room, unit_area, shape)
     local count = Config.VIEWPORTS_PER_ROOM_UNIT * unit_area
-    local positions = { { name = "center", position = room:GetCenterPos() } }
+    local first_position = room:GetCenterPos()
+    if L_SHAPE_SHAPES[shape] then
+        first_position = Positioning.SampleValidPosition(room)
+    end
+    local positions = { { name = "center", position = first_position } }
     for i = 2, count do
         positions[#positions + 1] = { name = "pos_" .. tostring(i), position = Positioning.SampleValidPosition(room) }
     end
@@ -116,7 +134,7 @@ function Viewports.GetPositions(room)
     local top_left = room:GetTopLeftPos()
     local bottom_right = room:GetBottomRightPos()
     local half_extent = unit_half_extent(room, shape, top_left, bottom_right)
-    local positions = random_room_positions(room, room_unit_area(shape))
+    local positions = random_room_positions(room, room_unit_area(shape), shape)
 
     return positions, half_extent
 end

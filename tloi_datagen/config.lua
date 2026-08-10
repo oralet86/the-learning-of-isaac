@@ -2,14 +2,17 @@
 local Config = {}
 
 -- Ticks to wait after posing a scene before treating it as "settled" for
--- idle-mode capture.
-Config.SETTLE_TICKS = 120
+-- idle-mode capture. Was 120 (2s) while chasing the ChangeRoom crash;
+-- cut back to 60 now that L-shape rooms are excluded from teleports.
+Config.SETTLE_TICKS = 60
 
 -- Ticks to wait after moving the player to the next camera-viewport
 -- position within the same room visit, before capturing. Shorter than
 -- SETTLE_TICKS since only the player/camera position changed -- doors,
 -- items, and health were already posed and settled for this room visit.
-Config.VIEWPORT_SETTLE_TICKS = 40
+-- Was 40 while chasing the ChangeRoom crash; cut back to 25 now that
+-- L-shape rooms are excluded from teleports.
+Config.VIEWPORT_SETTLE_TICKS = 25
 
 -- Extra settle ticks added on top of SETTLE_TICKS/SETTLE_TICKS_ANIMATED for
 -- RoomType.ROOM_BOSS. Room:SetClear(true) (see pose_and_settle) suppresses
@@ -29,8 +32,8 @@ Config.BOSS_SETTLE_TICKS_BONUS = 150
 -- CAPTURE_MODE_ANIMATED_PCT chance of "animated", so both modes appear
 -- within a single run.
 Config.CAPTURE_MODE_ANIMATED_PCT = 0.3
-Config.SETTLE_TICKS_ANIMATED = 40
-Config.VIEWPORT_SETTLE_TICKS_ANIMATED = 40
+Config.SETTLE_TICKS_ANIMATED = 30
+Config.VIEWPORT_SETTLE_TICKS_ANIMATED = 25
 
 -- Base number of camera-viewport positions to sample per "1x1 unit" of a
 -- room's area (see scenario/viewports.lua's ROOM_UNIT_AREA) -- e.g. a 1x1
@@ -138,6 +141,68 @@ Config.DOOR_STATE_WEIGHTS = {
 -- absent from ground truth -- see query/ground_truth.lua's
 -- is_visually_present).
 Config.SECRET_DOOR_BLOWN_PCT = 0.3
+
+-- Proactive workaround for the ChangeRoom native access-violation crash
+-- seen on the Mines floor (see scenario/build_m1.lua's
+-- TeleportToRandomRoom): when on a minecart floor (Mines/Ashpit = stages
+-- 3-4 with a Repentance-alt StageType 4 or 5), exclude 1x2-shaped rooms
+-- from the teleport candidate pool. The 1x2 minecart track room is the
+-- suspected crash trigger: the crash log died inside Game():ChangeRoom()
+-- into an unidentified room shortly after the Mines start room, and the
+-- minecart room is the one known 1x2 special room there (see
+-- https://bindingofisaacrebirth.wiki.gg/wiki/Rooms#Mine_Cart_Room).
+Config.EXCLUDE_1X2_ON_MINECART_FLOORS = true
+
+-- Collectible ids that must never be handed out by spawning/items.lua,
+-- as a set keyed by collectible id. Consulted by both the
+-- passive/familiar pool and the active pool (see get_item_pool /
+-- get_active_pool). Story/quest items that trigger special rooms or
+-- scripted events are excluded because they destabilize automated runs:
+--   IBS (725) randomly poops, corrupting scene captures.
+--   Knife Piece 1 (626) spawns the Knife Piece Room (the minecart quest
+--     room), which hard-crashes the game on the ChangeRoom into it; Knife
+--     Piece 2 (627) goes with it.
+--   Broken Shovel 1/2 (550/551) summon Mom's Foot stomping every few
+--     seconds; Mom's Shovel (552) is the completed story active.
+--   Dad's Note (668) is the Ascent trigger item; Polaroid (327) and
+--     Negative (328) are the end-game story items.
+-- Key Pieces 1/2 (238/239) are deliberately kept: they only open the Mega
+-- Satan door and cause no special-room or scripting side effects.
+Config.EXCLUDED_ITEM_IDS = {
+    [327] = true, -- Polaroid
+    [328] = true, -- Negative
+    [550] = true, -- Broken Shovel 1
+    [551] = true, -- Broken Shovel 2
+    [552] = true, -- Mom's Shovel
+    [626] = true, -- Knife Piece 1
+    [627] = true, -- Knife Piece 2
+    [668] = true, -- Dad's Note
+    [725] = true, -- IBS
+}
+
+-- Proactive workaround for the ChangeRoom native access-violation crash
+-- (see scenario/build_m1.lua's TeleportToRandomRoom): exclude every
+-- L-shape room (LTL/LTR/LBL/LBR) from the teleport candidate pool. Two
+-- crashes with full logging both died on the ChangeRoom into an LTL room
+-- (variant 728 on the Womb, variant 1063 on the Catacombs) with zero
+-- successful LTL entries, while LBL/LBR each entered fine exactly once --
+-- too small a sample to trust the non-LTL orientations, so all four are
+-- excluded; narrow to LTL only (or re-enable entirely) once enough
+-- crash-free data accumulates.
+Config.EXCLUDE_L_SHAPE_ROOMS = true
+
+-- Rooms that must never be teleported into, keyed by RoomConfig_Room.Name
+-- (see scenario/build_m1.lua's TeleportToRandomRoom). The Knife Piece Room
+-- (variant 10019 -- the minecart/yellow-button quest room of the
+-- Mines/Ashpit chapter) hard-crashes the game natively on the ChangeRoom
+-- into it: four of seven logged crashes are teleports into it, including
+-- grid 61 on s.4.4 twice and grid 162 on s.4.5 twice -- the same grid
+-- positions across different random layouts, so the room sits at a fixed
+-- position per floor skin. The room only exists when the player holds
+-- Knife Piece 1 (a possible baseline item), and it is 1x1-shaped, so
+-- neither shape-based exclusion catches it -- name is the reliable key
+-- here (its variant id on other floor skins is unverified).
+Config.EXCLUDED_ROOM_NAMES = { ["Knife Piece Room"] = true }
 
 -- Shared file-exchange directory the mod and the Python daemon
 -- (datagen/exchange.py) both read/write. The mod runs as a Windows process

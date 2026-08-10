@@ -108,10 +108,10 @@ def _build_table() -> tuple[HudRegionConfig, ...]:
         config_id=_REAL_CONFIG_ID,
         resolution=_REAL_RESOLUTION,
         regions={
-            "vitals": BBox(x1=45, y1=56, x2=557, y2=318),
-            "consumable": BBox(x1=1428, y1=972, x2=1875, y2=1059),
-            "stats": BBox(x1=26, y1=388, x2=294, y2=833),
-            "item_list": BBox(x1=1618, y1=281, x2=1876, y2=883),
+            "vitals": BBox(x1=0, y1=30, x2=512, y2=292),
+            "consumable": BBox(x1=1470, y1=984, x2=1917, y2=1071),
+            "stats": BBox(x1=0, y1=356, x2=268, y2=801),
+            "item_list": BBox(x1=1662, y1=235, x2=1920, y2=789),
         },
     )
 

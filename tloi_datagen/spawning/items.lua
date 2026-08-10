@@ -9,7 +9,8 @@ local ItemSpawning = {}
 -- ItemConfig rather than a hand-typed list, so there's no risk of a typo'd
 -- constant name silently breaking a pool entry and no need to keep this
 -- list in sync as the game's item roster changes. Excludes actives and
--- trinkets (out of scope -- see original.md).
+-- trinkets (out of scope -- see original.md), plus Config.EXCLUDED_ITEM_IDS
+-- (e.g. IBS, whose random pooping would corrupt scene captures).
 --
 -- NOTE: ItemConfig:GetCollectibles():Get(i) is documented as returning
 -- unusable userdata, so this iterates ids directly via GetCollectible(id)
@@ -26,15 +27,26 @@ local function get_item_pool()
     local item_config = Isaac.GetItemConfig()
     local max_id = item_config:GetCollectibles().Size - 1
     local pool = {}
+    local excluded_count = 0
     for id = 1, max_id do
         local item = item_config:GetCollectible(id)
-        if item ~= nil and (item.Type == ItemType.ITEM_PASSIVE or item.Type == ItemType.ITEM_FAMILIAR) then
+        if item ~= nil
+            and (item.Type == ItemType.ITEM_PASSIVE or item.Type == ItemType.ITEM_FAMILIAR)
+            and not Config.EXCLUDED_ITEM_IDS[id] then
             pool[#pool + 1] = id
+        else
+            excluded_count = excluded_count + 1
         end
     end
 
     item_pool_cache = pool
-    Log.Info("get_item_pool: built pool of " .. #pool .. " passive/familiar collectibles")
+    Log.Info(
+        "get_item_pool: built pool of "
+            .. #pool
+            .. " passive/familiar collectibles ("
+            .. excluded_count
+            .. " ids skipped: actives, trinkets, Config.EXCLUDED_ITEM_IDS)"
+    )
     return pool
 end
 
@@ -145,7 +157,7 @@ local function get_active_pool()
     local pool = {}
     for id = 1, max_id do
         local item = item_config:GetCollectible(id)
-        if item ~= nil and item.Type == ItemType.ITEM_ACTIVE then
+        if item ~= nil and item.Type == ItemType.ITEM_ACTIVE and not Config.EXCLUDED_ITEM_IDS[id] then
             pool[#pool + 1] = id
         end
     end

@@ -545,7 +545,28 @@ function mod:OnNewRoom()
         Log.Info("MC_POST_NEW_ROOM fired while in state " .. runner.state .. " -- ignoring")
         return
     end
-    Log.Info("MC_POST_NEW_ROOM fired, posing new room")
+    -- Log the entered room's descriptor in full -- the game's own "Room
+    -- X.Y(Name)" line omits the shape, which is exactly what's needed to
+    -- correlate room loads with the teleport log in
+    -- scenario/build_m1.lua after a ChangeRoom crash.
+    local descriptor = Game():GetLevel():GetCurrentRoomDesc()
+    if descriptor ~= nil and descriptor.Data ~= nil then
+        Log.Info(
+            "MC_POST_NEW_ROOM fired, entered room idx="
+                .. tostring(descriptor.GridIndex)
+                .. " type="
+                .. tostring(descriptor.Data.Type)
+                .. " variant="
+                .. tostring(descriptor.Data.Variant)
+                .. " shape="
+                .. tostring(descriptor.Data.Shape)
+                .. " name=\""
+                .. tostring(descriptor.Data.Name)
+                .. "\""
+        )
+    else
+        Log.Info("MC_POST_NEW_ROOM fired, posing new room")
+    end
     pose_and_settle()
 end
 
