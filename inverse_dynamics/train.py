@@ -68,9 +68,10 @@ def set_seed(seed: int = SEED) -> None:
 
 
 def get_device() -> torch.device:
+    """Returns the CUDA device, or fails loudly when no GPU is available."""
     if torch.cuda.is_available():
         return torch.device(device="cuda")
-    raise BaseException("CUDA not available!!")
+    raise RuntimeError("CUDA not available!!")
 
 
 # ---------------------------------------------------------------------------

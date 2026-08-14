@@ -11,6 +11,8 @@ papers
 # datagen IPC scratch files and generated dataset output
 datagen/runtime/
 datagen/output/
+datagen/output_augmented/
+runs
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
