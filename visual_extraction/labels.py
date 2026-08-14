@@ -53,6 +53,10 @@ items 1, 2, 4, 5, 6 are still open). The expected shape, once those land::
             ...,
         ],
     }
+
+    The mod still emits `item_delta`, `doors`, and `consumable.pill_known`,
+    but the model no longer predicts them (no reliable visual signal --
+    see the run reports); `encode_record` simply ignores those fields.
 """
 
 from __future__ import annotations
@@ -118,9 +122,6 @@ class LabelBundle:
     stage: torch.Tensor
     stage_mask: torch.Tensor
 
-    item_delta_action: torch.Tensor
-    item_delta_action_mask: torch.Tensor
-
     active_item_held: torch.Tensor
     active_item_held_mask: torch.Tensor
     active_item_charge: torch.Tensor
@@ -135,8 +136,6 @@ class LabelBundle:
     consumable_card_id_mask: torch.Tensor
     consumable_pill_color: torch.Tensor
     consumable_pill_color_mask: torch.Tensor
-    consumable_pill_known: torch.Tensor
-    consumable_pill_known_mask: torch.Tensor
 
     stats: torch.Tensor
     stats_mask: torch.Tensor
@@ -145,11 +144,6 @@ class LabelBundle:
     health_unknown_mask: torch.Tensor
     health_counts: torch.Tensor
     health_counts_mask: torch.Tensor
-
-    doors_presence: torch.Tensor
-    doors_presence_mask: torch.Tensor
-    doors_state: torch.Tensor
-    doors_state_mask: torch.Tensor
 
     detection_class: torch.Tensor
     detection_class_mask: torch.Tensor
@@ -161,10 +155,6 @@ def _ones() -> torch.Tensor:
     return torch.ones(())
 
 
-def _zeros() -> torch.Tensor:
-    return torch.zeros(())
-
-
 def _flag(value: bool) -> torch.Tensor:
     return torch.tensor(1.0 if value else 0.0)
 
@@ -172,12 +162,6 @@ def _flag(value: bool) -> torch.Tensor:
 def encode_stage(record: dict[str, Any]) -> tuple[torch.Tensor, torch.Tensor]:
     """Reads `stage_bucket` straight into a class-index tensor."""
     return torch.tensor(record["stage_bucket"], dtype=torch.long), _ones()
-
-
-def encode_item_delta(record: dict[str, Any]) -> tuple[torch.Tensor, torch.Tensor]:
-    """Reads `item_delta.action` (already an int code) straight into a class-index tensor."""
-    action = record["item_delta"]["action"]
-    return torch.tensor(action, dtype=torch.long), _ones()
 
 
 def encode_active_item(
@@ -213,10 +197,8 @@ def encode_consumable(
 ) -> dict[str, tuple[torch.Tensor, torch.Tensor]]:
     """`kind` straight into a class-index tensor; sub-fields masked by `kind`.
 
-    `pill_known`'s mask is `0.0` whenever the mod hasn't reported it yet
-    (`pill_known is None`), which today is always -- see
-    ``tloi_datagen/MOD_CHANGES_NEEDED.md`` item 4. Once the mod starts
-    populating it, this head starts training with zero code changes here.
+    The mod's `pill_known` field is no longer predicted (no reliable
+    visual signal), so it's ignored here.
     """
     consumable = record["consumable"]
     kind = consumable["kind"]
@@ -225,14 +207,11 @@ def encode_consumable(
 
     card_id = consumable["card_id"] if kind == KIND_CARD else 0
     pill_color = consumable["pill_color"] if kind == KIND_PILL else 0
-    pill_known = consumable.get("pill_known")
-    pill_known_mask = is_pill if pill_known is not None else _zeros()
 
     return {
         "kind": (torch.tensor(kind, dtype=torch.long), _ones()),
         "card_id": (torch.tensor(card_id, dtype=torch.long), is_card),
         "pill_color": (torch.tensor(pill_color, dtype=torch.long), is_pill),
-        "pill_known": (_flag(bool(pill_known)), pill_known_mask),
     }
 
 
@@ -259,30 +238,6 @@ def encode_health(
     return {
         "unknown": (_flag(unknown), _ones()),
         "counts": (torch.tensor(counts, dtype=torch.float32), counts_mask),
-    }
-
-
-def encode_doors(
-    record: dict[str, Any],
-) -> dict[str, tuple[torch.Tensor, torch.Tensor]]:
-    """Scatters the (already frame-filtered) `doors` list into fixed `NUM_DOOR_SLOTS` arrays.
-
-    `presence` is a valid label at every slot regardless of whether a door
-    is there (absence is itself the label), so its mask is all-ones.
-    `state` (open/locked/busted) is only meaningful where a door actually
-    exists, so it's masked by `presence`.
-    """
-    presence = torch.zeros(NUM_DOOR_SLOTS)
-    state = torch.zeros(NUM_DOOR_SLOTS, 3)
-    for door in record["doors"]:
-        slot = door["slot"]
-        presence[slot] = 1.0
-        state[slot, 0] = float(door["is_open"])
-        state[slot, 1] = float(door["is_locked"])
-        state[slot, 2] = float(door["is_busted"])
-    return {
-        "presence": (presence, torch.ones(NUM_DOOR_SLOTS)),
-        "state": (state, presence),
     }
 
 
@@ -360,7 +315,8 @@ class HeadSpec:
             `out_dim` independent binary targets).
         pred_shape: The shape (excluding batch dim) `network.py` reshapes
             this head's flat `out_dim` output into before returning it --
-            e.g. `(NUM_DOOR_SLOTS, 3)` for `doors_state`. Always a concrete
+            e.g. `(DETECTION_GRID_ROWS, DETECTION_GRID_COLS, 2)` for
+            `detection_offset`. Always a concrete
             tuple, never `None` -- built via `_head()` below, which
             defaults it to the trivial flat `(out_dim,)` shape for heads
             that don't need reshaping. Keeping this field mandatory (not
@@ -401,19 +357,15 @@ def _head(
 
 HEAD_SPECS: tuple[HeadSpec, ...] = (
     _head("stage", NUM_STAGE_BUCKETS, "classification"),
-    _head("item_delta_action", NUM_ITEM_DELTA_ACTIONS, "classification"),
     _head("active_item_held", 1, "binary"),
     _head("active_item_charge", 1, "bounded_regression"),
     _head("currency", NUM_CURRENCY, "regression"),
     _head("consumable_kind", NUM_CONSUMABLE_KINDS, "classification"),
     _head("consumable_card_id", NUM_CARDS, "classification"),
     _head("consumable_pill_color", NUM_PILL_COLORS, "classification"),
-    _head("consumable_pill_known", 1, "binary"),
     _head("stats", NUM_STATS, "regression"),
     _head("health_unknown", 1, "binary"),
     _head("health_counts", NUM_HEALTH_COUNTS, "regression"),
-    _head("doors_presence", NUM_DOOR_SLOTS, "binary"),
-    _head("doors_state", NUM_DOOR_SLOTS * 3, "binary", pred_shape=(NUM_DOOR_SLOTS, 3)),
     # detection_class is a *spatial* classification head (3-way per grid
     # cell, not once per sample) -- reshaped channel-first so
     # `F.cross_entropy`'s K-dimensional form (channel dim second) applies
@@ -438,20 +390,16 @@ HEAD_SPECS: tuple[HeadSpec, ...] = (
 def encode_record(record: dict[str, Any]) -> LabelBundle:
     """Encodes one ground-truth JSON dict into a full `LabelBundle`."""
     stage_target, stage_mask = encode_stage(record)
-    action_target, action_mask = encode_item_delta(record)
     active_item = encode_active_item(record)
     currency_target, currency_mask = encode_currency(record)
     consumable = encode_consumable(record)
     stats_target, stats_mask = encode_stats(record)
     health = encode_health(record)
-    doors = encode_doors(record)
     detections = encode_detections(record)
 
     return LabelBundle(
         stage=stage_target,
         stage_mask=stage_mask,
-        item_delta_action=action_target,
-        item_delta_action_mask=action_mask,
         active_item_held=active_item["held"][0],
         active_item_held_mask=active_item["held"][1],
         active_item_charge=active_item["charge"][0],
@@ -464,18 +412,12 @@ def encode_record(record: dict[str, Any]) -> LabelBundle:
         consumable_card_id_mask=consumable["card_id"][1],
         consumable_pill_color=consumable["pill_color"][0],
         consumable_pill_color_mask=consumable["pill_color"][1],
-        consumable_pill_known=consumable["pill_known"][0],
-        consumable_pill_known_mask=consumable["pill_known"][1],
         stats=stats_target,
         stats_mask=stats_mask,
         health_unknown=health["unknown"][0],
         health_unknown_mask=health["unknown"][1],
         health_counts=health["counts"][0],
         health_counts_mask=health["counts"][1],
-        doors_presence=doors["presence"][0],
-        doors_presence_mask=doors["presence"][1],
-        doors_state=doors["state"][0],
-        doors_state_mask=doors["state"][1],
         detection_class=detections["class"][0],
         detection_class_mask=detections["class"][1],
         detection_offset=detections["offset"][0],

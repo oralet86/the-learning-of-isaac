@@ -13,6 +13,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F  # noqa: N812
 
+from components.helpers import broadcast_mask
 from visual_extraction.labels import HEAD_SPECS, LabelBundle
 
 if TYPE_CHECKING:
@@ -25,14 +26,12 @@ def _masked_mean(per_element_loss: torch.Tensor, mask: torch.Tensor) -> torch.Te
     """Averages `per_element_loss` over every masked-in element.
 
     `mask` may have fewer trailing dims than `per_element_loss` (e.g. one
-    mask value per sample against a multi-dim regression target) -- it's
-    broadcast out to match before reducing. The extra dims are computed
-    from `.ndim`, a static (compile-time-known) property of each tensor's
-    shape, not a runtime value -- so this reshape is a fixed, traceable
-    op per head rather than a data-dependent Python loop.
+    mask value per sample against a multi-dim regression target) --
+    `broadcast_mask` (shared with `visual_extraction/train.py`'s
+    `_masked_correct`, so loss and accuracy can never disagree about
+    masking semantics) broadcasts it out to match before reducing.
     """
-    extra_dims = per_element_loss.ndim - mask.ndim
-    mask = mask.reshape(mask.shape + (1,) * extra_dims).expand_as(per_element_loss)
+    mask = broadcast_mask(mask, per_element_loss.ndim).expand_as(per_element_loss)
     total = (per_element_loss * mask).sum()
     count = mask.sum().clamp_min(1.0)
     return total / count

@@ -14,12 +14,14 @@ from typing import TYPE_CHECKING, override
 import numpy as np
 import torch
 from torch import Tensor
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import Dataset
 
-from constants import NUM_WORKERS, SEED
+from components.data_loading import (
+    build_loader,  # noqa: F401  (re-exported for inverse_dynamics.train)
+)
+from constants import SEED
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
     from pathlib import Path
 
 _SPLIT_TRAIN = 1
@@ -207,25 +209,3 @@ class WindowedDataset(Dataset[tuple[Tensor, Tensor]]):
 
     def __setstate__(self, state: dict[str, object]) -> None:
         self.__dict__.update(state)
-
-
-def build_loader(
-    dataset: Dataset[tuple[Tensor, Tensor]],
-    batch_size: int,
-    shuffle: bool,
-    num_workers: int = NUM_WORKERS,
-    pin_memory: bool = True,
-    drop_last: bool = True,
-    collate_fn: Callable[..., object] | None = None,
-) -> DataLoader[tuple[Tensor, Tensor]]:
-    return DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=shuffle,
-        num_workers=num_workers,
-        pin_memory=pin_memory,
-        drop_last=drop_last,
-        collate_fn=collate_fn,
-        persistent_workers=num_workers > 0,
-        prefetch_factor=(2 if num_workers > 0 else None),
-    )

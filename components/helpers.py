@@ -34,6 +34,30 @@ _K2_IDX_LIST: list[int] = [g[1] for g in SOFTMAX_GROUPS]
 _LABEL_IDX_LIST: list[int] = [idx for g in SOFTMAX_GROUPS for idx in g]
 
 
+def broadcast_mask(mask: torch.Tensor, target_ndim: int) -> torch.Tensor:
+    """Reshapes `mask` to `target_ndim` dims by appending trailing singletons.
+
+    Masks are typically coarser than the tensor they gate -- one value
+    per sample against a multi-dim prediction or loss -- so this appends
+    `(1,)` dims until `mask.ndim == target_ndim`, making it broadcastable
+    via `.expand_as(...)` in the caller. The extra dims come from
+    `.ndim`, a static (compile-time-known) property of each tensor's
+    shape, so the reshape is a fixed, traceable op per tensor rather than
+    a data-dependent Python loop. Returns a view (no copy).
+
+    Raises:
+        ValueError: If `mask` already has more dims than `target_ndim`
+            (broadcasting can only ever add dims).
+    """
+    extra_dims = target_ndim - mask.ndim
+    if extra_dims < 0:
+        raise ValueError(
+            f"mask with {mask.ndim} dims cannot be broadcast to a "
+            f"{target_ndim}-dim target"
+        )
+    return mask.reshape(mask.shape + (1,) * extra_dims)
+
+
 def init_resnet_weights(module: nn.Module) -> None:
     """Kaiming-init convs, constant-init BatchNorm affine params, small-normal-init
     Linear layers -- shared by every ResNet-style inverse-dynamics model so the

@@ -28,6 +28,13 @@ PROCESSED_DATA_DIR: Path = DATA_DIR / Path("processed_recorded_gameplay")
 DATA_CHUNKS_DIR: Path = DATA_DIR / Path("recorded_gameplay_chunks")
 INVERSE_DYNAMIC_RUNS_DIR: Path = DATA_DIR / Path("id_runs")
 
+# datagen ground-truth data: raw 1920x1080 captures, and the augmented
+# 480x270 training set derived from them (datagen.augment).
+DATAGEN_OUTPUT_DIR: Path = Path(__file__).parent / "datagen" / "output"
+DATAGEN_AUGMENTED_OUTPUT_DIR: Path = (
+    Path(__file__).parent / "datagen" / "output_augmented"
+)
+
 KEY_ORDER = [
     "w",
     "a",
@@ -62,6 +69,7 @@ CHUNK_VIDEO_WORKERS = 8
 
 EPOCHS = 100
 LR = 2e-3
+GT_BATCH_SIZE = 256
 PLATEAU_PATIENCE = 4
 LR_SCHEDULE_FACTOR = 0.2
 PATIENCE = 10

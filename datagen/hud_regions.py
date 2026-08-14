@@ -40,7 +40,9 @@ HUD_REGION_ANCHORS: dict[str, tuple[str, ...]] = {
 
 _REAL_CONFIG_ID = 0
 _DUMMY_CONFIG_ID = 1
+_DERIVED_CONFIG_ID = 2
 _REAL_RESOLUTION = (1920, 1080)
+_NATIVE_SCALE_DOWN = 4  # 1920x1080 -> 480x270, the game's native render resolution
 
 
 @dataclass(frozen=True)
@@ -71,7 +73,8 @@ class HudRegionConfig:
 
     Attributes:
         config_id: `0` for the real 1920x1080 config, `1` for the synthetic
-            test/dev dummy.
+            test/dev dummy, `2` for the 480x270 config derived from the
+            real one (see `_NATIVE_SCALE_DOWN`).
         resolution: `(width, height)` in pixels, matching captured images'
             own dimensions exactly.
         regions: One `BBox` per name in `HUD_REGION_NAMES`.
@@ -100,6 +103,31 @@ def _validate_no_overlaps(config: HudRegionConfig) -> None:
                 )
 
 
+def _div_down(value: int, divisor: int) -> int:
+    """Integer division rounding toward negative infinity."""
+    return value // divisor
+
+
+def _div_up(value: int, divisor: int) -> int:
+    """Integer division rounding toward positive infinity."""
+    return -(-value // divisor)
+
+
+def _downscaled_bbox(bbox: BBox, divisor: int) -> BBox:
+    """Scales a `BBox` down by `divisor`, widening it so no content is clipped.
+
+    `x1`/`y1` are floored and `x2`/`y2` are ceiled, so a boundary that
+    lands between pixels sits just *outside* the region rather than
+    cutting edge pixels off.
+    """
+    return BBox(
+        x1=_div_down(bbox.x1, divisor),
+        y1=_div_down(bbox.y1, divisor),
+        x2=_div_up(bbox.x2, divisor),
+        y2=_div_up(bbox.y2, divisor),
+    )
+
+
 def _build_table() -> tuple[HudRegionConfig, ...]:
     # The one real config: 1920x1080, region bboxes measured against real
     # captures via `datagen.find_hud_offsets` (median over 11 images; see
@@ -111,7 +139,24 @@ def _build_table() -> tuple[HudRegionConfig, ...]:
             "vitals": BBox(x1=0, y1=30, x2=512, y2=292),
             "consumable": BBox(x1=1470, y1=984, x2=1917, y2=1071),
             "stats": BBox(x1=0, y1=356, x2=268, y2=801),
-            "item_list": BBox(x1=1662, y1=235, x2=1920, y2=789),
+            "item_list": BBox(x1=1662, y1=235, x2=1920, y2=936),
+        },
+    )
+
+    # The native-render config: `real_config` divided by the capture's 4x
+    # upscale factor, bbox boundaries widened outward (see
+    # `_downscaled_bbox`) so no HUD content is lost at the lower
+    # resolution. Derived rather than hand-measured -- there's nothing to
+    # measure, since the 480x270 frame is exactly the pre-upscale render.
+    derived_config = HudRegionConfig(
+        config_id=_DERIVED_CONFIG_ID,
+        resolution=(
+            _REAL_RESOLUTION[0] // _NATIVE_SCALE_DOWN,
+            _REAL_RESOLUTION[1] // _NATIVE_SCALE_DOWN,
+        ),
+        regions={
+            name: _downscaled_bbox(bbox, _NATIVE_SCALE_DOWN)
+            for name, bbox in real_config.regions.items()
         },
     )
 
@@ -126,7 +171,7 @@ def _build_table() -> tuple[HudRegionConfig, ...]:
         },
     )
 
-    table = (real_config, dummy_config)
+    table = (real_config, derived_config, dummy_config)
     for config in table:
         _validate_no_overlaps(config)
     return table
@@ -136,7 +181,7 @@ HUD_REGION_TABLE: tuple[HudRegionConfig, ...] = _build_table()
 
 
 def get_region_config(config_id: int) -> HudRegionConfig:
-    """Looks up a `HudRegionConfig` by its `config_id` (0 real, 1 dummy)."""
+    """Looks up a `HudRegionConfig` by its `config_id` (0 real, 1 dummy, 2 derived)."""
     for config in HUD_REGION_TABLE:
         if config.config_id == config_id:
             return config
@@ -148,7 +193,8 @@ def get_region_config_for_resolution(width: int, height: int) -> HudRegionConfig
 
     Raises:
         KeyError: No config matches this resolution -- it isn't the real
-            1920x1080 capture config (or the dummy).
+            1920x1080 capture config, its 480x270 derived config, or the
+            dummy.
         ValueError: A matching config exists but still has placeholder
             (unfilled) region coordinates.
     """

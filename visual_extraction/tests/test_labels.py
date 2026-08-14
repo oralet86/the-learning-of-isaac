@@ -61,12 +61,6 @@ def test_stage_reads_bucket_straight_through() -> None:
     assert mask.item() == 1.0
 
 
-def test_item_delta_reads_action_straight_through() -> None:
-    target, mask = labels.encode_item_delta(_base_record(item_delta={"action": 2}))
-    assert target.item() == 2
-    assert mask.item() == 1.0
-
-
 def test_active_item_not_held_masks_charge() -> None:
     heads = labels.encode_active_item(
         _base_record(active_item={"held": False, "charge": None})
@@ -97,7 +91,6 @@ def test_consumable_none_masks_card_and_pill_fields() -> None:
     )
     assert heads["card_id"][1].item() == 0.0
     assert heads["pill_color"][1].item() == 0.0
-    assert heads["pill_known"][1].item() == 0.0
 
 
 def test_consumable_card_unmasks_card_id_only() -> None:
@@ -116,24 +109,7 @@ def test_consumable_card_unmasks_card_id_only() -> None:
     assert heads["pill_color"][1].item() == 0.0
 
 
-def test_consumable_pill_without_known_field_stays_masked() -> None:
-    """Simulates today's data, where the mod doesn't emit `pill_known` yet."""
-    heads = labels.encode_consumable(
-        _base_record(
-            consumable={
-                "kind": labels.KIND_PILL,
-                "card_id": None,
-                "pill_color": 3,
-                "pill_known": None,
-            }
-        )
-    )
-    assert heads["pill_color"][0].item() == 3
-    assert heads["pill_color"][1].item() == 1.0
-    assert heads["pill_known"][1].item() == 0.0
-
-
-def test_consumable_pill_known_unmasks_once_mod_reports_it() -> None:
+def test_consumable_pill_unmasks_pill_color() -> None:
     heads = labels.encode_consumable(
         _base_record(
             consumable={
@@ -144,8 +120,9 @@ def test_consumable_pill_known_unmasks_once_mod_reports_it() -> None:
             }
         )
     )
-    assert heads["pill_known"][0].item() == 1.0
-    assert heads["pill_known"][1].item() == 1.0
+    assert heads["pill_color"][0].item() == 3
+    assert heads["pill_color"][1].item() == 1.0
+    assert "pill_known" not in heads
 
 
 def test_health_unknown_masks_all_counts() -> None:
@@ -163,42 +140,13 @@ def test_health_known_unmasks_counts() -> None:
     assert heads["counts"][0][0].item() == record["health"]["hearts"]
 
 
-def test_doors_empty_list_leaves_all_slots_absent() -> None:
-    heads = labels.encode_doors(_base_record(doors=[]))
-    assert heads["presence"][0].tolist() == [0.0] * labels.NUM_DOOR_SLOTS
-    assert heads["presence"][1].tolist() == [1.0] * labels.NUM_DOOR_SLOTS
-    assert heads["state"][1].sum().item() == 0.0
-
-
-def test_doors_packs_by_slot_index_and_masks_state_by_presence() -> None:
-    heads = labels.encode_doors(
-        _base_record(
-            doors=[
-                {"slot": 2, "is_open": True, "is_locked": False, "is_busted": False},
-                {"slot": 5, "is_open": False, "is_locked": True, "is_busted": False},
-            ]
-        )
-    )
-    presence, presence_mask = heads["presence"]
-    state, state_mask = heads["state"]
-
-    assert presence[2].item() == 1.0
-    assert presence[5].item() == 1.0
-    assert presence.sum().item() == 2.0
-    assert presence_mask.tolist() == [1.0] * labels.NUM_DOOR_SLOTS
-
-    assert state[2].tolist() == [1.0, 0.0, 0.0]
-    assert state[5].tolist() == [0.0, 1.0, 0.0]
-    assert state_mask[2].item() == 1.0
-    assert state_mask[0].item() == 0.0
-
-
 def test_encode_record_produces_a_full_bundle() -> None:
     bundle = labels.encode_record(_base_record())
     assert isinstance(bundle, labels.LabelBundle)
     assert bundle.stage.item() == 3
-    assert bundle.doors_presence.shape == (labels.NUM_DOOR_SLOTS,)
-    assert bundle.doors_state.shape == (labels.NUM_DOOR_SLOTS, 3)
+    assert not hasattr(bundle, "item_delta_action")
+    assert not hasattr(bundle, "consumable_pill_known")
+    assert not hasattr(bundle, "doors_presence")
     assert bundle.detection_class.shape == (
         labels.DETECTION_GRID_ROWS,
         labels.DETECTION_GRID_COLS,

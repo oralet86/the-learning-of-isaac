@@ -12,6 +12,9 @@ import torch
 
 from datagen.augment import (
     AugmentConfig,
+    _region_overlap_conflicts,
+    _resolve_region_overlaps,
+    _sample_region_jitter,
     _shift_region,
     apply_compression_artifacts,
     apply_hud_jitter_batch,
@@ -65,6 +68,80 @@ def test_apply_compression_artifacts_changes_bytes_not_shape() -> None:
     assert compressed.shape == image.shape
     assert compressed.dtype == image.dtype
     assert not np.array_equal(compressed, image)
+
+
+def test_webp_high_quality_preserves_hard_edges_better_than_low() -> None:
+    # Pixel-art-HUD-like content: flat background with hard-edged colored
+    # bars and a 1px white stroke -- the shapes that actually need to stay
+    # readable in the augmented dataset.
+    image = np.full((64, 64, 3), 60, dtype=np.uint8)
+    image[20:28, 20:40] = (200, 30, 30)
+    image[40:48, 20:40] = (30, 200, 30)
+    image[52, 20:40] = 240
+
+    low_err = np.abs(
+        apply_compression_artifacts(image, quality=30).astype(int) - image.astype(int)
+    ).mean()
+    high_err = np.abs(
+        apply_compression_artifacts(image, quality=98).astype(int) - image.astype(int)
+    ).mean()
+
+    # High quality must be both visibly better than low quality and small
+    # in absolute terms (a couple of units out of 255).
+    assert high_err < low_err
+    assert high_err < 3.0
+
+
+def test_region_overlap_resolution_removes_sampled_source_overlaps() -> None:
+    region_cfg = get_region_config(_DUMMY_CONFIG_ID)
+    batch_size = 64
+    generator = torch.Generator().manual_seed(0)
+
+    dx, dy, scale = _sample_region_jitter(
+        generator,
+        jitter_max_px=20,
+        jitter_scale_range=(0.6, 1.4),
+        batch_size=batch_size,
+    )
+    dx, dy, scale = _resolve_region_overlaps(
+        region_cfg,
+        dx,
+        dy,
+        scale,
+        generator,
+        jitter_max_px=20,
+        jitter_scale_range=(0.6, 1.4),
+    )
+
+    conflicts = _region_overlap_conflicts(region_cfg, dx, dy, scale)
+    assert not conflicts.any()
+
+
+def test_region_overlap_resolution_leaves_mild_jitter_untouched() -> None:
+    region_cfg = get_region_config(_DUMMY_CONFIG_ID)
+    batch_size = 8
+    generator = torch.Generator().manual_seed(0)
+
+    dx, dy, scale = _sample_region_jitter(
+        generator,
+        jitter_max_px=1,
+        jitter_scale_range=(0.98, 1.02),
+        batch_size=batch_size,
+    )
+    resolved = _resolve_region_overlaps(
+        region_cfg,
+        dx,
+        dy,
+        scale,
+        generator,
+        jitter_max_px=1,
+        jitter_scale_range=(0.98, 1.02),
+    )
+
+    assert all(
+        torch.equal(original, fixed)
+        for original, fixed in zip((dx, dy, scale), resolved, strict=True)
+    )
 
 
 def _write_pair(
