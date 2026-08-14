@@ -68,14 +68,17 @@ end
 -- *shapes* are valid targets (normal, boss, shop, secret, treasure, etc.;
 -- 1x1, long rooms, L-shapes, 2x2) -- per-shape camera-viewport sampling
 -- (scenario.viewports) is what makes non-1x1 shapes produce correctly
--- framed captures -- except for two proactive workarounds, both gated on
+-- framed captures -- except for three proactive workarounds, all gated on
 -- Config flags (see config.lua): on the minecart floors (Mines/Ashpit),
 -- 1x2-shaped rooms are excluded when Config.EXCLUDE_1X2_ON_MINECART_FLOORS
--- is set (the 1x2 minecart track room is a suspected ChangeRoom crash
--- trigger), and every L-shape room is excluded when
+-- is set (a suspected ChangeRoom crash trigger; the confirmed culprit is
+-- actually the 1x1 mineshaft track rooms, which are excluded by name via
+-- Config.EXCLUDED_ROOM_NAMES), every L-shape room is excluded when
 -- Config.EXCLUDE_L_SHAPE_ROOMS is set (two logged crashes both died on
--- the ChangeRoom into an LTL room). Game():ChangeRoom() (not
--- Level:ChangeRoom(), whose own docs say it doesn't update fx layers
+-- the ChangeRoom into an LTL room), and every room named in
+-- Config.EXCLUDED_ROOM_NAMES is excluded (the Knife Piece Room and the
+-- mineshaft track rooms, both confirmed crash triggers). Game():ChangeRoom()
+-- (not Level:ChangeRoom(), whose own docs say it doesn't update fx layers
 -- properly) fires MC_POST_NEW_ROOM, which the caller must wait for before
 -- posing the new room.
 --

@@ -7,6 +7,7 @@ local GroundTruthQuery = include("query.ground_truth")
 local StageRoute = include("data.stage_route")
 local Positioning = include("scenario.positioning")
 local Viewports = include("scenario.viewports")
+local Pose = include("scenario.pose")
 local HeartState = include("spawning.hearts")
 local ItemSpawning = include("spawning.items")
 local Consumables = include("spawning.consumables")
@@ -66,6 +67,8 @@ local NUM_PLAYER_TYPES = 41
 ---@field capture_ticks_remaining integer
 ---@field room_wait_ticks_remaining integer
 ---@field current_capture_mode string "idle" or "animated", rolled once per room visit (see pose_and_settle).
+---@field pose string? "animated"-mode pose key ("walk_*"/"shoot_*"), rolled once per room visit alongside current_capture_mode. Purely visual -- the player never moves or fires, and the pose is never logged in ground truth.
+---@field pose_frame integer Frame index into the pose's animation cycle, re-rolled per viewport so consecutive captures show different mid-cycle sprites.
 ---@field current_item_delta {action: string, item_id: integer?}?
 ---@field current_active_item {held: boolean, item_id: integer?, charge: number?}?
 ---@field route string[] Built once per run by StageRoute.BuildRandomRoute.
@@ -87,6 +90,8 @@ local runner = {
     capture_ticks_remaining = 0,
     room_wait_ticks_remaining = 0,
     current_capture_mode = "idle",
+    pose = nil,
+    pose_frame = 0,
     current_item_delta = nil,
     current_active_item = nil,
     route = { "s.1.0" },
@@ -200,6 +205,19 @@ local function pose_and_settle()
     runner.current_capture_mode = rng:RandomFloat() < Config.CAPTURE_MODE_ANIMATED_PCT and "animated" or "idle"
     Log.Info("pose_and_settle: capture_mode=" .. runner.current_capture_mode)
 
+    -- "animated" mode additionally rolls a forced walk/shoot pose: the
+    -- player sprite is held mid-animation (never actually moving or firing)
+    -- for the whole settle+capture window. Pose is deliberately not part of
+    -- ground truth -- it exists only so captured frames show the model the
+    -- player's non-idle sprites.
+    runner.pose = nil
+    runner.pose_frame = 0
+    if runner.current_capture_mode == "animated" then
+        runner.pose = Pose.RollPose(rng)
+        runner.pose_frame = rng:RandomInt(64)
+        Log.Info("pose_and_settle: pose=" .. runner.pose .. " frame=" .. runner.pose_frame)
+    end
+
     Doors.RandomizeDoors(room, rng)
 
     local player = Isaac.GetPlayer(0)
@@ -302,6 +320,16 @@ end
 -- consumables are deliberately not re-rolled for player2 here either,
 -- matching player1's "only position changes" treatment for this function.
 local function advance_viewport()
+    -- Re-roll the pose's cycle frame per viewport (while the pose itself
+    -- stays fixed for the whole room visit), so consecutive captures show
+    -- different mid-walk/mid-aim sprites instead of the same frozen frame.
+    if runner.pose ~= nil then
+        local frame_rng = RNG()
+        frame_rng:SetSeed(runner.seed + runner.viewport_index, 0)
+        runner.pose_frame = frame_rng:RandomInt(64)
+        Log.Info("advance_viewport: pose=" .. runner.pose .. " frame=" .. runner.pose_frame)
+    end
+
     local player = Isaac.GetPlayer(0)
     local target = runner.viewport_positions[runner.viewport_index]
     player.Position = target.position
@@ -446,6 +474,19 @@ mod:AddCallback(ModCallbacks.MC_POST_GAME_STARTED, mod.OnGameStarted)
 -- MC_POST_UPDATE: room-change timeout, settle countdown, and polling for
 -- the daemon's capture ack.
 function mod:OnUpdate()
+    -- Pose forcing must run on every tick through WAITING_FOR_CAPTURE, not
+    -- just SETTLING: the engine reverts the player's animation each frame,
+    -- and the daemon grabs its frame after settling already ended, so
+    -- stopping here would leave the captured frame showing the idle
+    -- revert.
+    if runner.pose ~= nil and (runner.state == STATE_SETTLING or runner.state == STATE_WAITING_FOR_CAPTURE) then
+        Pose.Apply(Isaac.GetPlayer(0), runner.pose, runner.pose_frame)
+        local player2 = get_second_player()
+        if player2 ~= nil then
+            Pose.Apply(player2, runner.pose, runner.pose_frame)
+        end
+    end
+
     if runner.state == STATE_WAITING_FOR_ROOM then
         runner.room_wait_ticks_remaining = runner.room_wait_ticks_remaining - 1
         if runner.room_wait_ticks_remaining <= 0 then
@@ -483,6 +524,7 @@ function mod:OnUpdate()
     if runner.state == STATE_WAITING_FOR_CAPTURE then
         if Exchange.PollAck(runner.scenario_id) then
             Exchange.Cleanup(runner.scenario_id)
+            runner.pose = nil
             Log.Info("scenario " .. runner.scenario_id .. " captured")
 
             if runner.viewport_index < #runner.viewport_positions then

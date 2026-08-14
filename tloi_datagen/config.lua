@@ -146,11 +146,13 @@ Config.SECRET_DOOR_BLOWN_PCT = 0.3
 -- seen on the Mines floor (see scenario/build_m1.lua's
 -- TeleportToRandomRoom): when on a minecart floor (Mines/Ashpit = stages
 -- 3-4 with a Repentance-alt StageType 4 or 5), exclude 1x2-shaped rooms
--- from the teleport candidate pool. The 1x2 minecart track room is the
--- suspected crash trigger: the crash log died inside Game():ChangeRoom()
--- into an unidentified room shortly after the Mines start room, and the
--- minecart room is the one known 1x2 special room there (see
--- https://bindingofisaacrebirth.wiki.gg/wiki/Rooms#Mine_Cart_Room).
+-- from the teleport candidate pool. The original suspicion -- that the
+-- 1x2 minecart track room is the crash trigger -- has since been
+-- superseded: a fully-logged crash died entering the *1x1* "Mineshaft
+-- Room (normal straight)" (variant 10124, s.4.5), which is now excluded
+-- by name via EXCLUDED_ROOM_NAMES. The 1x2 rule is kept anyway as a
+-- cheap belt-and-suspenders guard (it only costs the 1x2 boss arena
+-- "Great Gideon" as a candidate on these floors).
 Config.EXCLUDE_1X2_ON_MINECART_FLOORS = true
 
 -- Collectible ids that must never be handed out by spawning/items.lua,
@@ -202,7 +204,31 @@ Config.EXCLUDE_L_SHAPE_ROOMS = true
 -- Knife Piece 1 (a possible baseline item), and it is 1x1-shaped, so
 -- neither shape-based exclusion catches it -- name is the reliable key
 -- here (its variant id on other floor skins is unverified).
-Config.EXCLUDED_ROOM_NAMES = { ["Knife Piece Room"] = true }
+--
+-- Every mineshaft (minecart track) room of the Mines/Ashpit chapter is
+-- also excluded: a logged crash died inside Game():ChangeRoom() on the
+-- first-ever entry into a mineshaft room -- "Mineshaft Room (normal
+-- straight)" (variant 10124, grid 96 on s.4.5, 1x1-shaped) -- right after
+-- the candidate list had been logged in full, so the dead-on-arrival room
+-- was named with certainty. All seven names below were observed in that
+-- same candidate listing (variant ids are per-floor-skin and unverified
+-- elsewhere, but the names are consistent across skins); they all share
+-- the scripted cart-on-rails mechanic, and the 1x1 "normal straight"
+-- being the first one ever teleported into dying on entry while the 1x2
+-- Great Gideon boss room (the earlier suspected trigger, see
+-- EXCLUDE_1X2_ON_MINECART_FLOORS) had never crashed suggests the whole
+-- track-room family is unsafe to enter via ChangeRoom -- not any one
+-- shape of it.
+Config.EXCLUDED_ROOM_NAMES = {
+    ["Knife Piece Room"] = true,
+    ["Mineshaft Lobby"] = true,
+    ["Mineshaft Room (big straight)"] = true,
+    ["Mineshaft Room (big curve)"] = true,
+    ["Mineshaft Room (corridor tall)"] = true,
+    ["Mineshaft Room (corridor long)"] = true,
+    ["Mineshaft Room (normal straight)"] = true,
+    ["Mineshaft Room (normal curve)"] = true,
+}
 
 -- Shared file-exchange directory the mod and the Python daemon
 -- (datagen/exchange.py) both read/write. The mod runs as a Windows process
