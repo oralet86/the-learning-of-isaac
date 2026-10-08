@@ -1,4 +1,0 @@
-# third-party tooling, backups and tests are not part of the image
-tools/
-tests/
-**/__pycache__/

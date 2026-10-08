@@ -13,30 +13,23 @@ Usage (RL training loop)::
     with ActionSender() as sender:
         sender.focus_game()
         while True:
-            keys = agent.predict(frame)  # list[str] or list[int]
-            sender.apply(keys)  # string-based
-            #  OR
-            sender.apply_vector(keys)  # index-based, fastest path
+            keys = agent.predict(frame)  # list[int] over KEY_ORDER
+            sender.apply_vector(keys)
 """
 
 from __future__ import annotations
 
 import subprocess
 import time
-from typing import TYPE_CHECKING, Self
+from typing import Self
 
 from evdev import UInput, ecodes
 
-from constants import KEY_ORDER
-
-if TYPE_CHECKING:
-    from collections.abc import Iterable
+from constants import GAME_WINDOW_TITLE, KEY_ORDER
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-
-_ISAAC_WINDOW_NAME = "Binding of Isaac"
 
 _NAME_TO_CODE: dict[str, int] = {
     "w": ecodes.KEY_W,
@@ -69,7 +62,7 @@ _N_KEYS = len(KEY_ORDER)
 def _find_isaac_window() -> str | None:
     """Return the X11 window ID of the Isaac window, or None."""
     result = subprocess.run(
-        ["xdotool", "search", "--name", _ISAAC_WINDOW_NAME],
+        ["xdotool", "search", "--name", GAME_WINDOW_TITLE],
         capture_output=True,
         text=True,
         timeout=3,
@@ -88,7 +81,7 @@ class ActionSender:
     """Low-latency keyboard action injection for The Binding of Isaac.
 
     Opens a Linux uinput device and tracks the currently-held key state
-    as a boolean mask over ``KEY_ORDER``.  Each call to ``apply()`` or
+    as a boolean mask over ``KEY_ORDER``.  Each call to
     ``apply_vector()`` diffs the desired state against the current state
     and sends only the key-up / key-down events that changed, followed by
     a single ``syn()``.
@@ -120,22 +113,6 @@ class ActionSender:
     # Public API
     # ------------------------------------------------------------------
 
-    def apply(self, keys: Iterable[str]) -> None:
-        """Set the currently-held keys to *keys*.
-
-        Only keys present in *keys* are held; any previously-held key
-        not in *keys* is released.  Sends one event batch followed by
-        a single ``syn()``.
-
-        Args:
-            keys: Iterable of key names from ``KEY_ORDER``.
-        """
-        desired = [False] * self._n_keys
-        for key in keys:
-            idx = self._name_to_idx[key]
-            desired[idx] = True
-        self._apply_mask(desired)
-
     def apply_vector(self, keys: list[int]) -> None:
         """Set the currently-held keys from a binary vector.
 
@@ -154,7 +131,7 @@ class ActionSender:
     def press(self, key: str) -> None:
         """Press and hold a single key without releasing others.
 
-        Non-blocking — the key stays held until ``apply()`` or
+        Non-blocking — the key stays held until ``apply_vector()`` or
         ``release_all()`` is called.
         """
         desired = list(self._pressed)
@@ -174,7 +151,7 @@ class ActionSender:
     def tap(self, key: str, duration_s: float = 0.02) -> None:
         """Press a key, wait briefly, then release.
 
-        Blocks for *duration_s* seconds.  Use ``apply()`` /
+        Blocks for *duration_s* seconds.  Use
         ``apply_vector()`` with alternating frames instead for
         non-blocking taps in the RL training loop.
 
@@ -219,15 +196,6 @@ class ActionSender:
 
     def __exit__(self, *args: object) -> None:
         self.close()
-
-    # ------------------------------------------------------------------
-    # Properties
-    # ------------------------------------------------------------------
-
-    @property
-    def pressed(self) -> frozenset[str]:
-        """Frozen set of currently-held key names."""
-        return frozenset(KEY_ORDER[i] for i in range(self._n_keys) if self._pressed[i])
 
     # ------------------------------------------------------------------
     # Internal

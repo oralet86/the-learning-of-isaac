@@ -18,9 +18,10 @@ import time
 
 import numpy as np
 
+from constants import STEP_HZ
+from container.build import DEFAULT_IMAGE
 from container.sidecar.config import DEFAULT_GAME_HEIGHT, DEFAULT_GAME_WIDTH
-from live.backend import STEP_HZ
-from live.fleet import DEFAULT_BASE_PORT, DEFAULT_IMAGE, ContainerFleet, FleetConfig
+from live.fleet import DEFAULT_BASE_PORT, ContainerFleet, FleetConfig
 from live.model import RandomAgent
 from live.vector import make_vector_env
 

@@ -2,12 +2,27 @@
 
 from __future__ import annotations
 
+from itertools import pairwise
 from typing import TYPE_CHECKING
 
 import pytest
 
-from container.sidecar.config import SidecarConfig
-from container.sidecar.game import options_path, render_options, write_options
+from constants import STEP_HZ
+from container.build import APP_DIR, build_command
+from container.sidecar.config import (
+    DEFAULT_GAME_DIR,
+    DEFAULT_SAVE_SOURCE_DIR,
+    SidecarConfig,
+)
+from container.sidecar.display import screen_size
+from container.sidecar.game import (
+    clear_run_state,
+    install_save,
+    options_path,
+    render_options,
+    write_options,
+)
+from container.sidecar.protocol import DEFAULT_PORT
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -25,7 +40,7 @@ def test_config_defaults_and_env_overrides() -> None:
 
 @pytest.mark.parametrize(
     "environ",
-    [{"GAME_WIDTH": "0"}, {"GAME_HEIGHT": "-5"}, {"TICK_HZ": "0"}],
+    [{"GAME_WIDTH": "0"}, {"GAME_HEIGHT": "-5"}],
 )
 def test_config_rejects_out_of_range_values(environ: dict[str, str]) -> None:
     with pytest.raises(ValueError, match="positive"):
@@ -49,3 +64,67 @@ def test_write_options_creates_parent_directories(tmp_path: Path) -> None:
 
     assert path.read_text() == render_options(320, 180)
     assert path.is_relative_to(tmp_path / "drive_c" / "users" / "root")
+
+
+def test_config_control_rate_is_the_shared_constant() -> None:
+    assert SidecarConfig.from_env({"TICK_HZ": "60"}).tick_hz == STEP_HZ
+
+
+def test_install_save_copies_the_single_save_into_slot_one(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "persistentgamedata_8e097dd2.dat").write_bytes(b"unlocked")
+    target = tmp_path / "saves"
+    target.mkdir()
+    (target / "persistentgamedata1.dat").write_bytes(b"changed by earlier runs")
+
+    install_save(source, target)
+
+    assert (target / "persistentgamedata1.dat").read_bytes() == b"unlocked"
+
+
+@pytest.mark.parametrize("names", [[], ["a.dat", "b.dat"]])
+def test_install_save_requires_exactly_one_save(
+    tmp_path: Path, names: list[str]
+) -> None:
+    for name in names:
+        (tmp_path / name).write_bytes(b"x")
+
+    with pytest.raises(FileNotFoundError, match="exactly one"):
+        install_save(tmp_path, tmp_path / "saves")
+
+
+def test_clear_run_state_removes_only_in_progress_runs(tmp_path: Path) -> None:
+    for name in ("gamestate1.dat", "gamestate2.dat", "persistentgamedata1.dat"):
+        (tmp_path / name).write_bytes(b"x")
+
+    clear_run_state(tmp_path)
+
+    assert [path.name for path in tmp_path.iterdir()] == ["persistentgamedata1.dat"]
+
+
+def test_screen_is_larger_than_the_game_window_and_never_tiny() -> None:
+    small = screen_size(240, 135)
+    large = screen_size(1920, 1080)
+
+    assert small == (1024, 640)
+    assert large[0] > 1920
+    assert large[1] > 1080
+
+
+def test_build_command_passes_the_python_constants_to_the_image() -> None:
+    command = build_command("example:tag", "podman")
+
+    assert command[:4] == ["podman", "build", "--tag", "example:tag"]
+    assert command[-1] == "."
+    build_args = {
+        arg.split("=", 1)[0]: arg.split("=", 1)[1]
+        for flag, arg in pairwise(command)
+        if flag == "--build-arg"
+    }
+    assert build_args == {
+        "APP_DIR": str(APP_DIR),
+        "GAME_DIR": str(DEFAULT_GAME_DIR),
+        "SAVE_SOURCE_DIR": str(DEFAULT_SAVE_SOURCE_DIR),
+        "SIDECAR_PORT": str(DEFAULT_PORT),
+    }

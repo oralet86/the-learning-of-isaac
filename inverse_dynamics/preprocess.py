@@ -17,6 +17,7 @@ import numpy as np
 from skmultilearn.model_selection import iterative_train_test_split
 from tqdm import tqdm
 
+from components.shard_store import shard_path, write_shard
 from constants import (
     AFK_DURATION_SECONDS,
     DATA_CHUNKS_DIR,
@@ -31,6 +32,7 @@ from constants import (
     TRIM_EDGE_FRAC,
     VAL_FRAC,
 )
+from inverse_dynamics.chunk_video import chunk_sidecar_path, chunk_stem
 from inverse_dynamics.transforms import (
     afk_mask,
     center_crop_frames,
@@ -288,8 +290,8 @@ def main() -> None:
         group_name = chunk_dir.name
 
         chunk_id = int(meta_path.stem.rsplit("_", 1)[0].split("_", 1)[1])
-        frames_path = chunk_dir / f"chunk_{chunk_id:04d}_frames.npy"
-        keys_path = chunk_dir / f"chunk_{chunk_id:04d}_keys.json"
+        frames_path = shard_path(chunk_dir, chunk_stem(chunk_id), "frames")
+        keys_path = chunk_sidecar_path(chunk_dir, chunk_id, "keys")
 
         if not frames_path.exists():
             continue
@@ -357,10 +359,12 @@ def main() -> None:
         )
 
         # --- Save ---
-        out_stem = f"{group_name}_chunk_{chunk_id:04d}"
-        np.save(args.out_dir / f"{out_stem}_frames.npy", frames)
-        np.save(args.out_dir / f"{out_stem}_labels.npy", labels)
-        np.save(args.out_dir / f"{out_stem}_split.npy", split)
+        out_stem = f"{group_name}_{chunk_stem(chunk_id)}"
+        write_shard(
+            args.out_dir,
+            out_stem,
+            {"frames": frames, "labels": labels, "split": split},
+        )
 
         total_frames_final += n_final
         total_pos += labels.sum(axis=0).astype(np.float64)

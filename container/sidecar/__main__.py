@@ -1,4 +1,4 @@
-"""Sidecar entry point: launch the game, then serve it over TCP.
+"""Sidecar entry point: start the display, launch the game, serve it over TCP.
 
 Run inside the container as ``python -m container.sidecar``.
 """
@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 from Xlib.display import Display
 
 from container.sidecar.config import SidecarConfig
+from container.sidecar.display import display_name, start_xvfb
 from container.sidecar.server import serve_forever
 from container.sidecar.session import GameSession
 
@@ -29,7 +30,7 @@ def _raise_exit(signum: int, _frame: FrameType | None) -> None:
 
 
 def main() -> None:
-    """Launch the game and serve clients until the container is stopped."""
+    """Run the display, the game and the server until the container is stopped."""
     logging.basicConfig(
         level=os.environ.get("LOG_LEVEL", "INFO"),
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
@@ -41,12 +42,18 @@ def main() -> None:
     signal.signal(signal.SIGINT, _raise_exit)
 
     config = SidecarConfig.from_env(os.environ)
-    session = GameSession(config, Display())
+    xvfb = start_xvfb(config.display_num, config.game_width, config.game_height)
     try:
-        session.launch()
-        serve_forever(session, config.port, config.tick_hz, config.idle_pause_s)
+        # Wine inherits the display through the environment.
+        os.environ["DISPLAY"] = display_name(config.display_num)
+        session = GameSession(config, Display(display_name(config.display_num)))
+        try:
+            session.launch()
+            serve_forever(session, config.port, config.tick_hz, config.idle_pause_s)
+        finally:
+            session.shutdown()
     finally:
-        session.shutdown()
+        xvfb.terminate()
 
 
 if __name__ == "__main__":

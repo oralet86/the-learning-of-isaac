@@ -11,31 +11,15 @@ from typing import TYPE_CHECKING, Protocol
 from Xlib import XK, X
 from Xlib.ext import xtest
 
+from constants import KEY_ORDER
+
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from Xlib.display import Display
 
-# Order in which STEP key vectors are interpreted. Must match
-# ``constants.KEY_ORDER`` on the trainer side; the client verifies this at HELLO.
-KEY_ORDER: tuple[str, ...] = (
-    "w",
-    "a",
-    "s",
-    "d",
-    "up",
-    "down",
-    "left",
-    "right",
-    "e",
-    "space",
-    "q",
-    "tab",
-    "ctrl",
-)
-
-# X keysym names for every key the sidecar can press: the action keys above
-# plus the extra keys that only the menu scripts use.
+# X keysym names for every key the sidecar can press: the action keys in
+# `constants.KEY_ORDER` plus the extra keys that only the menu scripts use.
 KEYSYM_NAMES: dict[str, str] = {
     "w": "w",
     "a": "a",

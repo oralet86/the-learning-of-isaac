@@ -1,0 +1,9 @@
+# Build context for container/Containerfile is the repository root.
+# Ignore everything, then allow only what the image copies.
+*
+!constants.py
+!container/__init__.py
+!container/sidecar
+!container/isaac
+!container/save
+**/__pycache__

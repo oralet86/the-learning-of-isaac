@@ -8,13 +8,13 @@ import subprocess
 import time
 from typing import Self
 
+from container.build import DEFAULT_IMAGE, DEFAULT_RUNTIME
 from container.sidecar.config import DEFAULT_GAME_HEIGHT, DEFAULT_GAME_WIDTH
 from container.sidecar.protocol import DEFAULT_PORT as SIDECAR_PORT
 from live.remote import RemoteGame
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_IMAGE = "localhost/tloi-isaac:dev"
 DEFAULT_BASE_PORT = 5600
 _LOOPBACK = "127.0.0.1"
 _READY_POLL_S = 1.0
@@ -43,7 +43,7 @@ class FleetConfig:
     base_port: int = DEFAULT_BASE_PORT
     game_width: int = DEFAULT_GAME_WIDTH
     game_height: int = DEFAULT_GAME_HEIGHT
-    runtime: str = "podman"
+    runtime: str = DEFAULT_RUNTIME
     name_prefix: str = "tloi-env"
     ready_timeout_s: float = 180.0
 

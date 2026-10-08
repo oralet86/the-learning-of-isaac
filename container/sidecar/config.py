@@ -6,16 +6,23 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from constants import GAME_WINDOW_TITLE, STEP_HZ
 from container.sidecar.menu import MenuConfig
 from container.sidecar.protocol import DEFAULT_PORT
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-# Smallest window size confirmed to work; the entrypoint's defaults must match.
+# Smallest window size confirmed to work.
 DEFAULT_GAME_WIDTH = 480
 DEFAULT_GAME_HEIGHT = 270
-DEFAULT_TICK_HZ = 20
+
+# Where the image keeps the game and the pristine save. `container.build`
+# passes these to the Containerfile, so they are defined only here.
+DEFAULT_GAME_DIR = Path("/opt/isaac")
+DEFAULT_SAVE_SOURCE_DIR = Path("/opt/save")
+
+DEFAULT_DISPLAY_NUM = 99
 
 
 @dataclass(frozen=True)
@@ -28,6 +35,9 @@ class SidecarConfig:
         game_height: Requested game window height in pixels.
         tick_hz: Control rate; one STEP spans ``1 / tick_hz`` seconds.
         game_dir: Directory containing ``isaac-ng.exe``.
+        save_source_dir: Directory holding the one save file installed into
+            slot 1 before every launch.
+        display_num: X display number of the virtual screen.
         window_title: Substring identifying the game window's title.
         window_timeout_s: How long to wait for the game window after launch.
         window_settle_s: How long the window size must stay unchanged before
@@ -41,9 +51,11 @@ class SidecarConfig:
     port: int = DEFAULT_PORT
     game_width: int = DEFAULT_GAME_WIDTH
     game_height: int = DEFAULT_GAME_HEIGHT
-    tick_hz: int = DEFAULT_TICK_HZ
-    game_dir: Path = Path("/opt/isaac")
-    window_title: str = "Binding of Isaac"
+    tick_hz: int = STEP_HZ
+    game_dir: Path = DEFAULT_GAME_DIR
+    save_source_dir: Path = DEFAULT_SAVE_SOURCE_DIR
+    display_num: int = DEFAULT_DISPLAY_NUM
+    window_title: str = GAME_WINDOW_TITLE
     window_timeout_s: float = 120.0
     window_settle_s: float = 3.0
     idle_pause_s: float = 0.25
@@ -54,7 +66,8 @@ class SidecarConfig:
         """Build a config from defaults plus environment overrides.
 
         Recognised variables: ``SIDECAR_PORT``, ``GAME_WIDTH``, ``GAME_HEIGHT``,
-        ``TICK_HZ``, ``GAME_DIR``, ``WINDOW_TIMEOUT_S``, ``IDLE_PAUSE_S`` and the ``MENU_*``
+        ``GAME_DIR``, ``SAVE_SOURCE_DIR``, ``DISPLAY_NUM``, ``WINDOW_TIMEOUT_S``,
+        ``IDLE_PAUSE_S`` and the ``MENU_*``
         variables described in :class:`~container.sidecar.menu.MenuConfig`.
 
         Raises:
@@ -64,8 +77,11 @@ class SidecarConfig:
             port=int(environ.get("SIDECAR_PORT", cls.port)),
             game_width=int(environ.get("GAME_WIDTH", cls.game_width)),
             game_height=int(environ.get("GAME_HEIGHT", cls.game_height)),
-            tick_hz=int(environ.get("TICK_HZ", cls.tick_hz)),
             game_dir=Path(environ.get("GAME_DIR", str(cls.game_dir))),
+            save_source_dir=Path(
+                environ.get("SAVE_SOURCE_DIR", str(cls.save_source_dir))
+            ),
+            display_num=int(environ.get("DISPLAY_NUM", cls.display_num)),
             window_timeout_s=float(
                 environ.get("WINDOW_TIMEOUT_S", cls.window_timeout_s)
             ),
@@ -77,8 +93,6 @@ class SidecarConfig:
                 f"game size must be positive, got "
                 f"{config.game_width}x{config.game_height}"
             )
-        if config.tick_hz <= 0:
-            raise ValueError(f"TICK_HZ must be positive, got {config.tick_hz}")
         if config.idle_pause_s < 0:
             raise ValueError(
                 f"IDLE_PAUSE_S must not be negative, got {config.idle_pause_s}"

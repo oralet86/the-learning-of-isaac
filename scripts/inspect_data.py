@@ -32,30 +32,15 @@ import torch
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_PROJECT_ROOT))
 
-from components.signed_diff import SignedDiff  # noqa: E402
+from components.helpers import SignedDiff  # noqa: E402
+from constants import KEY_ORDER, PROCESSED_DATA_DIR  # noqa: E402
 
 # -- Constants -----------------------------------------------------------
-DATA_DIR = _PROJECT_ROOT / "data" / "processed_recorded_gameplay"
-KEY_ORDER = [
-    "w",
-    "a",
-    "s",
-    "d",
-    "up",
-    "down",
-    "left",
-    "right",
-    "e",
-    "space",
-    "q",
-    "tab",
-    "ctrl",
-]
+DATA_DIR = _PROJECT_ROOT / PROCESSED_DATA_DIR
 WINDOW_SIZE = 9
 STRIDE = 2
 ZOOM = 2  # integer scale factor per frame
 FRAME_W = 320
-FRAME_H = 180
 
 
 def _numpy_to_qimage(arr: np.ndarray, zoom: int) -> QImage:

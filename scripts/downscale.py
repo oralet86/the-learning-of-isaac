@@ -1,8 +1,7 @@
 """Consolidated downscaling for frames, images, and video.
 
 One flexible, fast entry point (`downscale`) for resizing in-memory arrays
-(single frame or batch), plus thin I/O wrappers for image files and `.mp4`
-video.
+(single frame or batch), plus a thin I/O wrapper for `.mp4` video.
 """
 
 from __future__ import annotations
@@ -14,7 +13,6 @@ from typing import TYPE_CHECKING
 
 import cv2
 import numpy as np
-from PIL import Image
 import torch
 import torch.nn.functional as tf
 
@@ -221,133 +219,6 @@ def downscale(
     return result if is_batch else result[0]
 
 
-_PIL_RESAMPLE = {
-    Interpolation.AREA: Image.Resampling.BOX,
-    Interpolation.LINEAR: Image.Resampling.BILINEAR,
-    Interpolation.CUBIC: Image.Resampling.BICUBIC,
-    Interpolation.NEAREST: Image.Resampling.NEAREST,
-}
-
-
-def _resize_pil(
-    image: Image.Image, target_w: int, target_h: int, interpolation: Interpolation
-) -> np.ndarray:
-    """Resize a PIL image with PIL's own resampling filters.
-
-    Used for the image-file wrappers instead of routing through the cv2/torch
-    array core: PIL's filters (e.g. `BICUBIC`) aren't numerically identical
-    to cv2's or torch's same-named filters.
-    """
-    resized = image.resize((target_w, target_h), resample=_PIL_RESAMPLE[interpolation])
-    return np.array(resized, dtype=np.uint8)
-
-
-def downscale_image_file(
-    path: Path,
-    target_w: int,
-    target_h: int,
-    interpolation: Interpolation = Interpolation.AREA,
-    force_aspect_ratio: bool = False,
-    use_gpu: bool = False,
-) -> np.ndarray:
-    """Read one image file and downscale it.
-
-    Args:
-        path: Path to an image file readable by PIL (PNG and similar).
-        target_w: Output width.
-        target_h: Output height.
-        interpolation: See `downscale`. `AREA`/`LINEAR`/`CUBIC`/`NEAREST`
-            are resized with PIL's own filters (not cv2's or torch's) so
-            output matches what direct `PIL.Image.resize` calls produced.
-            `CENTER_PIXEL` has no PIL equivalent and is routed through the
-            array core instead.
-        force_aspect_ratio: See `downscale`.
-        use_gpu: See `downscale`. A no-op for `AREA`/`LINEAR`/`CUBIC`/
-            `NEAREST` (PIL is CPU-only); applies only to `CENTER_PIXEL`,
-            where it's still a no-op since that's always single-frame.
-
-    Returns:
-        `(target_h, target_w, 3)` `uint8` RGB array.
-    """
-    image = Image.open(path).convert("RGB")
-    src_w, src_h = image.size
-    if force_aspect_ratio:
-        _check_aspect_ratio(src_w, src_h, target_w, target_h)
-
-    if interpolation == Interpolation.CENTER_PIXEL:
-        array = np.asarray(image, dtype=np.uint8)
-        return downscale(
-            array,
-            target_w,
-            target_h,
-            interpolation=interpolation,
-            force_aspect_ratio=True,
-            use_gpu=use_gpu,
-        )
-
-    return _resize_pil(image, target_w, target_h, interpolation)
-
-
-def downscale_image_batch(
-    paths: list[Path],
-    target_w: int,
-    target_h: int,
-    interpolation: Interpolation = Interpolation.AREA,
-    force_aspect_ratio: bool = False,
-    use_gpu: bool = False,
-) -> np.ndarray:
-    """Read and downscale a batch of same-resolution image files.
-
-    Args:
-        paths: Paths to image files readable by PIL, all sharing the same
-            source resolution.
-        target_w: Output width.
-        target_h: Output height.
-        interpolation: See `downscale_image_file`.
-        force_aspect_ratio: See `downscale`.
-        use_gpu: See `downscale`. Only meaningful for `CENTER_PIXEL`
-            (`AREA`/`LINEAR`/`CUBIC`/`NEAREST` always go through PIL, which
-            is CPU-only).
-
-    Returns:
-        `(N, target_h, target_w, 3)` `uint8` RGB array.
-
-    Raises:
-        ValueError: `paths` is empty, or the images don't share a
-            resolution.
-    """
-    if not paths:
-        raise ValueError("paths must be non-empty")
-
-    images = [Image.open(p).convert("RGB") for p in paths]
-    sizes = {image.size for image in images}
-    if len(sizes) > 1:
-        raise ValueError(f"All images must share a resolution, got sizes: {sizes}")
-
-    src_w, src_h = next(iter(sizes))
-    if force_aspect_ratio:
-        _check_aspect_ratio(src_w, src_h, target_w, target_h)
-
-    if interpolation == Interpolation.CENTER_PIXEL:
-        batch = np.stack(
-            [np.asarray(image, dtype=np.uint8) for image in images], axis=0
-        )
-        return downscale(
-            batch,
-            target_w,
-            target_h,
-            interpolation=interpolation,
-            force_aspect_ratio=True,
-            use_gpu=use_gpu,
-        )
-
-    resized = [
-        _resize_pil(image, target_w, target_h, interpolation) for image in images
-    ]
-    return np.stack(resized, axis=0)
-
-
-@lru_cache(maxsize=1)
 def _ffmpeg_has_cuda() -> bool:
     """Check once whether the system ffmpeg build supports CUDA hwaccel."""
     try:

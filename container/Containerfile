@@ -1,4 +1,7 @@
 # Isaac environment image: Wine + Xvfb + Mesa software rendering + sidecar
+#
+# Build with `python -m container.build` from the repository root: it supplies
+# the build arguments below from the same constants the Python code uses.
 FROM python:3.14-slim-bookworm
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -22,32 +25,41 @@ RUN dpkg --add-architecture i386 && apt-get update && apt-get install -y --no-in
 # Sidecar runtime dependencies (the sidecar itself is copied at the end)
 RUN pip install --no-cache-dir python-xlib numpy
 
-# Bake the Wine prefix into the image so it is never created at runtime
-# Xvfb is started directly (xvfb-run needs xauth, which isn't installed).
-# Its lock file and socket dir are removed so they are not baked into the layer;
-# a stale lock makes Xvfb refuse to start when the recorded PID is reused.
-# mscoree/mshtml disabled so wineboot doesn't block on Mono/Gecko install prompts.
-RUN Xvfb :99 -nolisten tcp & XPID=$!; sleep 2; \
-    DISPLAY=:99 WINEDLLOVERRIDES="mscoree,mshtml=" wineboot --init && wineserver -w; \
+# Bake the Wine prefix into the image so it is never created at runtime.
+# This needs an X server only for the duration of the build step; the display
+# number here is unrelated to the one the sidecar uses at runtime.
+# Xvfb's lock file and socket dir are removed so they are not baked into the
+# layer. mscoree/mshtml are disabled so wineboot doesn't block on Mono/Gecko
+# install prompts.
+RUN Xvfb :1 -nolisten tcp & XPID=$!; sleep 2; \
+    DISPLAY=:1 WINEDLLOVERRIDES="mscoree,mshtml=" wineboot --init && wineserver -w; \
     status=$?; kill $XPID; wait $XPID; \
-    rm -rf /tmp/.X99-lock /tmp/.X11-unix /tmp/wine-*; exit $status
+    rm -rf /tmp/.X1-lock /tmp/.X11-unix /tmp/wine-*; exit $status
 
 ENV WINEDLLOVERRIDES="mscoree,mshtml="
 
-# Your Steam-less game copy, placed next to this file as ./isaac/
-COPY isaac/ /opt/isaac/
+# Supplied by container/build.py; there are deliberately no defaults here.
+ARG APP_DIR
+ARG GAME_DIR
+ARG SAVE_SOURCE_DIR
+ARG SIDECAR_PORT
+RUN test -n "${APP_DIR}" && test -n "${GAME_DIR}" \
+    && test -n "${SAVE_SOURCE_DIR}" && test -n "${SIDECAR_PORT}" \
+    || { echo "missing build args: build with 'python -m container.build'" >&2; exit 1; }
 
-# Fully unlocked save, placed next to this file as ./save/ (exactly one .dat).
-# The game reads slot 1 from its Documents folder, which Wine maps to $HOME.
-# (JSON form because the destination path contains spaces)
-COPY ["save/*.dat", "/root/My Games/Binding of Isaac Repentance+/persistentgamedata1.dat"]
+# Your Steam-less game copy, kept in the repo as container/isaac/
+COPY container/isaac/ ${GAME_DIR}/
+
+# Fully unlocked save, kept as container/save/ (exactly one .dat). The sidecar
+# installs it into the game's save slot before every launch.
+COPY container/save/ ${SAVE_SOURCE_DIR}/
 
 # Sidecar sources last, so editing them does not invalidate the game layer.
-# They keep their repo package path (container.sidecar) under /opt/app.
-COPY __init__.py /opt/app/container/__init__.py
-COPY sidecar/ /opt/app/container/sidecar/
-COPY --chmod=755 entrypoint.sh /entrypoint.sh
+# They keep their repo import paths (constants, container.sidecar).
+COPY constants.py ${APP_DIR}/constants.py
+COPY container/__init__.py ${APP_DIR}/container/__init__.py
+COPY container/sidecar/ ${APP_DIR}/container/sidecar/
 
-# Sidecar TCP port (see container/sidecar/protocol.py)
-EXPOSE 5599
-ENTRYPOINT ["/entrypoint.sh"]
+WORKDIR ${APP_DIR}
+EXPOSE ${SIDECAR_PORT}
+ENTRYPOINT ["python3", "-m", "container.sidecar"]

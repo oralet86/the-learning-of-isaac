@@ -16,6 +16,12 @@ AFK_DURATION_SECONDS = 3.0
 
 MASTER_FPS = 60
 
+# Control rate of the live RL loop: one action per tick, keys held in between.
+STEP_HZ = 20
+
+# Substring of the game window's title, used to find it on screen.
+GAME_WINDOW_TITLE = "Binding of Isaac"
+
 # Sync self-check threshold (ms), reported in drift_report.txt.
 SYNC_DROPPED_FRAME_GAP_MS = 25.0
 
@@ -62,20 +68,10 @@ CHUNK_VIDEO_WORKERS = 8
 
 EPOCHS = 100
 LR = 2e-3
-GT_BATCH_SIZE = 256
 PLATEAU_PATIENCE = 4
 LR_SCHEDULE_FACTOR = 0.2
 PATIENCE = 10
 NUM_WORKERS = 4
-
-# Dynamic Weight Averaging (DWA) per-head loss weights, applied once per
-# epoch after validation. The EMA smooths per-head val losses (masked heads
-# average over few samples and are noisy); the temperature controls how
-# aggressively weights rebalance (lower = more); the floor keeps a
-# permanently stuck head's weight from collapsing toward zero.
-DWA_EMA_ALPHA = 0.85
-DWA_TEMPERATURE = 1.0
-DWA_FLOOR_FRAC = 0.05
 
 WORST_PRED_BATCH_SIZE = 256
 TOP_K_WORST_PREDS = 4

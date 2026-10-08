@@ -14,12 +14,10 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pytest
 
-from constants import KEY_ORDER
-from container.sidecar import keys as sidecar_keys
+from constants import KEY_ORDER, STEP_HZ
 from container.sidecar.protocol import ProtocolError, ResetMode
 from container.sidecar.server import ClientHandler
 from container.tests.fakes import FakeControl
-from live.backend import STEP_HZ
 from live.remote import RemoteGame, SidecarError
 
 if TYPE_CHECKING:
@@ -55,10 +53,6 @@ def sidecar() -> Iterator[_FakeSidecar]:
     instance = _FakeSidecar()
     yield instance
     instance.join()
-
-
-def test_sidecar_key_order_matches_the_trainer() -> None:
-    assert list(sidecar_keys.KEY_ORDER) == KEY_ORDER
 
 
 def test_reset_then_steps_return_frames_in_order(sidecar: _FakeSidecar) -> None:

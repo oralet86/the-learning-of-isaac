@@ -14,9 +14,6 @@ if TYPE_CHECKING:
 
     import numpy as np
 
-# Control rate of the RL loop. Keys stay held between steps.
-STEP_HZ = 20
-
 
 class GameBackend(Protocol):
     """A game that can be reset, stepped with key vectors and observed."""

@@ -19,9 +19,8 @@ import sys
 import numpy as np
 from pynput import keyboard
 
-from constants import KEY_ORDER
+from constants import KEY_ORDER, STEP_HZ
 from live.action import ActionSender
-from live.backend import STEP_HZ
 from live.env import IsaacEnv
 from live.local import LocalGame
 from live.model import RandomAgent

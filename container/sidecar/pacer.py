@@ -40,11 +40,6 @@ class Pacer:
         self._sleep = sleep
         self._deadline: float | None = None
 
-    @property
-    def period(self) -> float:
-        """Seconds between ticks."""
-        return self._period
-
     def reset(self) -> None:
         """Forget the schedule; the next tick is one period after it is requested."""
         self._deadline = None

@@ -12,6 +12,7 @@ from container.sidecar.capture import WindowCapture, find_window, focus_window
 from container.sidecar.game import (
     GameProcess,
     clear_run_state,
+    install_save,
     options_path,
     save_dir,
     write_options,
@@ -94,6 +95,7 @@ class GameSession:
         prefix = Path(os.environ["WINEPREFIX"])
         user = os.environ.get("USER", "root")
         write_options(options_path(prefix, user), config.game_width, config.game_height)
+        install_save(config.save_source_dir, save_dir(prefix, user))
         clear_run_state(save_dir(prefix, user))
         self._game.start()
         self._in_run = False

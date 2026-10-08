@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 
 from constants import KEY_ORDER, TARGET_HEIGHT, TARGET_WIDTH
+from container.tests.fakes import FakeClock
 from live.env import IsaacEnv
 from live.events import GameEvents, NullDetector, RewardConfig, compute_reward
 from live.local import LocalGame
@@ -190,21 +191,8 @@ class _FakeSender:
         self.releases += 1
 
 
-class _Clock:
-    def __init__(self) -> None:
-        self.now = 50.0
-        self.sleeps: list[float] = []
-
-    def __call__(self) -> float:
-        return self.now
-
-    def sleep(self, seconds: float) -> None:
-        self.sleeps.append(seconds)
-        self.now += seconds
-
-
-def _local_game() -> tuple[LocalGame, _FakeStream, _FakeSender, _Clock]:
-    stream, sender, clock = _FakeStream(), _FakeSender(), _Clock()
+def _local_game() -> tuple[LocalGame, _FakeStream, _FakeSender, FakeClock]:
+    stream, sender, clock = _FakeStream(), _FakeSender(), FakeClock()
     game = LocalGame(stream, sender, step_hz=20, clock=clock, sleep=clock.sleep)
     return game, stream, sender, clock
 

@@ -14,8 +14,8 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pytest
 
+from constants import KEY_ORDER
 from container.sidecar import protocol
-from container.sidecar.keys import KEY_ORDER
 from container.sidecar.protocol import (
     FrameHeader,
     HelloReply,
@@ -68,7 +68,7 @@ def test_hello_announces_size_rate_and_key_order(served: _Served) -> None:
 
     assert message_type is MessageType.HELLO_REPLY
     assert HelloReply.unpack(payload) == HelloReply(
-        protocol.PROTOCOL_VERSION, 8, 6, _TICK_HZ, KEY_ORDER
+        protocol.PROTOCOL_VERSION, 8, 6, _TICK_HZ, tuple(KEY_ORDER)
     )
 
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
+import shutil
 import signal
 import subprocess
 
@@ -12,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 _EXECUTABLE = "isaac-ng.exe"
 _SAVE_RELATIVE_DIR = Path("Documents", "My Games", "Binding of Isaac Repentance+")
+_SAVE_SLOT_FILE = "persistentgamedata1.dat"
 _STOP_TIMEOUT_S = 10.0
 
 # Settings forced on every launch. Keys left out keep the game's defaults,
@@ -45,6 +47,28 @@ def save_dir(wine_prefix: Path, user: str) -> Path:
 def options_path(wine_prefix: Path, user: str) -> Path:
     """Return where the game reads ``options.ini`` inside a Wine prefix."""
     return save_dir(wine_prefix, user) / "options.ini"
+
+
+def install_save(source_dir: Path, directory: Path) -> None:
+    """Copy the image's save file into slot 1 of the game's save directory.
+
+    Done before every launch, so each game starts from the same unlocks no
+    matter what earlier runs in this container changed.
+
+    Args:
+        source_dir: Directory holding exactly one ``.dat`` save file.
+        directory: The game's save directory.
+
+    Raises:
+        FileNotFoundError: If *source_dir* does not hold exactly one ``.dat``.
+    """
+    candidates = sorted(source_dir.glob("*.dat"))
+    if len(candidates) != 1:
+        raise FileNotFoundError(
+            f"expected exactly one .dat save in {source_dir}, found {len(candidates)}"
+        )
+    directory.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(candidates[0], directory / _SAVE_SLOT_FILE)
 
 
 def clear_run_state(directory: Path) -> None:

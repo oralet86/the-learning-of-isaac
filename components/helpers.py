@@ -6,53 +6,65 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F  # noqa: N812
 
+from constants import KEY_ORDER
+
 _RESIDUAL_DROPOUT = 0.1
 _HEAD_HIDDEN_DIM = 32
 
-# -------- GroupedKeyLoss constants (indices into the 13-dim label vector) --------
-# Based on KEY_ORDER = ["w","a","s","d","up","down","left","right",
-#                        "e","space","q","tab","ctrl"]
+# -------- GroupedKeyLoss constants (indices into the KEY_ORDER label vector) --------
+# Keys are named here and their indices derived from `KEY_ORDER`, so the
+# grouping follows the label layout instead of assuming it.
 
-_SIGMOID_START: int = 8
-_SIGMOID_END: int = 13
+NUM_KEYS: int = len(KEY_ORDER)
 
-SOFTMAX_GROUPS: tuple[tuple[int, int], ...] = (
-    (1, 3),  # wasd_x:  a (idx 1), d (idx 3)
-    (0, 2),  # wasd_y:  w (idx 0), s (idx 2)
-    (6, 7),  # arrow_x: left (idx 6), right (idx 7)
-    (4, 5),  # arrow_y: up (idx 4), down (idx 5)
+# Independent keys, each predicted with its own sigmoid.
+_SIGMOID_KEYS: tuple[str, ...] = ("e", "space", "q", "tab", "ctrl")
+
+# Opposing key pairs, each predicted as a 3-way softmax (first, neither, second).
+_SOFTMAX_KEY_PAIRS: tuple[tuple[str, str], ...] = (
+    ("a", "d"),  # wasd_x
+    ("w", "s"),  # wasd_y
+    ("left", "right"),  # arrow_x
+    ("up", "down"),  # arrow_y
 )
 
-NUM_SIGMOID: int = _SIGMOID_END - _SIGMOID_START  # 5
-NUM_SOFTMAX: int = len(SOFTMAX_GROUPS)  # 4
+
+def _sigmoid_slice_bounds() -> tuple[int, int]:
+    """Return the `[start, end)` label slice holding the sigmoid keys.
+
+    Raises:
+        ValueError: If the grouping does not cover `KEY_ORDER` exactly once,
+            or the sigmoid keys are not one contiguous run in `KEY_ORDER`
+            order (the loss slices them out as a block).
+    """
+    grouped = [*_SIGMOID_KEYS, *(key for pair in _SOFTMAX_KEY_PAIRS for key in pair)]
+    if sorted(grouped) != sorted(KEY_ORDER):
+        raise ValueError(
+            f"key groups {grouped} do not cover KEY_ORDER {KEY_ORDER} exactly once"
+        )
+    indices = [KEY_ORDER.index(key) for key in _SIGMOID_KEYS]
+    start = indices[0]
+    if indices != list(range(start, start + len(indices))):
+        raise ValueError(
+            f"sigmoid keys {_SIGMOID_KEYS} must be contiguous and in order in "
+            f"KEY_ORDER, got indices {indices}"
+        )
+    return start, start + len(indices)
+
+
+_SIGMOID_START, _SIGMOID_END = _sigmoid_slice_bounds()
+
+SOFTMAX_GROUPS: tuple[tuple[int, int], ...] = tuple(
+    (KEY_ORDER.index(first), KEY_ORDER.index(second))
+    for first, second in _SOFTMAX_KEY_PAIRS
+)
+
+NUM_SIGMOID: int = len(_SIGMOID_KEYS)
+NUM_SOFTMAX: int = len(SOFTMAX_GROUPS)
 
 _K1_IDX_LIST: list[int] = [g[0] for g in SOFTMAX_GROUPS]
 _K2_IDX_LIST: list[int] = [g[1] for g in SOFTMAX_GROUPS]
 _LABEL_IDX_LIST: list[int] = [idx for g in SOFTMAX_GROUPS for idx in g]
-
-
-def broadcast_mask(mask: torch.Tensor, target_ndim: int) -> torch.Tensor:
-    """Reshapes `mask` to `target_ndim` dims by appending trailing singletons.
-
-    Masks are typically coarser than the tensor they gate -- one value
-    per sample against a multi-dim prediction or loss -- so this appends
-    `(1,)` dims until `mask.ndim == target_ndim`, making it broadcastable
-    via `.expand_as(...)` in the caller. The extra dims come from
-    `.ndim`, a static (compile-time-known) property of each tensor's
-    shape, so the reshape is a fixed, traceable op per tensor rather than
-    a data-dependent Python loop. Returns a view (no copy).
-
-    Raises:
-        ValueError: If `mask` already has more dims than `target_ndim`
-            (broadcasting can only ever add dims).
-    """
-    extra_dims = target_ndim - mask.ndim
-    if extra_dims < 0:
-        raise ValueError(
-            f"mask with {mask.ndim} dims cannot be broadcast to a "
-            f"{target_ndim}-dim target"
-        )
-    return mask.reshape(mask.shape + (1,) * extra_dims)
 
 
 def init_resnet_weights(module: nn.Module) -> None:
@@ -215,7 +227,7 @@ class GroupedKeyLoss(nn.Module):
     def from_full_pos_weight(
         cls, pos_weight: torch.Tensor, device: torch.device
     ) -> "GroupedKeyLoss":
-        """Build from the raw ``(13,)`` pos_weight vector loaded from disk."""
+        """Build from the raw ``(NUM_KEYS,)`` pos_weight vector loaded from disk."""
         return cls(
             sigmoid_pos_weight=pos_weight[_SIGMOID_START:_SIGMOID_END].to(device)
         )
@@ -229,7 +241,7 @@ class GroupedKeyLoss(nn.Module):
 
         Args:
             logits: ``(sigmoid_logits: (B, 5), softmax_logits: (B, 4, 3))``.
-            targets: ``(B, 13)`` binary labels (float).
+            targets: ``(B, NUM_KEYS)`` binary labels (float).
 
         Returns:
             Scalar loss.
@@ -267,13 +279,13 @@ class GroupedKeyLoss(nn.Module):
     def to_binary_probs(
         self, logits: tuple[torch.Tensor, torch.Tensor]
     ) -> torch.Tensor:
-        """Reconstruct ``(B, 13)`` binary probabilities from ``(sigmoid_logits, softmax_logits)``."""
+        """Reconstruct ``(B, NUM_KEYS)`` binary probabilities from ``(sigmoid_logits, softmax_logits)``."""
         sigmoid_logits, softmax_logits = logits
         bs = sigmoid_logits.shape[0]
         device = sigmoid_logits.device
         dtype = sigmoid_logits.dtype
 
-        probs = torch.zeros(bs, 13, device=device, dtype=dtype)
+        probs = torch.zeros(bs, NUM_KEYS, device=device, dtype=dtype)
         probs[:, _SIGMOID_START:_SIGMOID_END] = torch.sigmoid(sigmoid_logits)
 
         group_probs = F.softmax(softmax_logits, dim=-1).to(dtype=dtype)

@@ -21,6 +21,7 @@ import sys
 import numpy as np
 from tqdm import tqdm
 
+from components.shard_store import write_shard
 from constants import (
     CHUNK_VIDEO_WORKERS,
     DATA_CHUNKS_DIR,
@@ -152,6 +153,16 @@ def _decode_video(
 # ---------------------------------------------------------------------------
 
 
+def chunk_stem(chunk_id: int) -> str:
+    """File-name stem shared by one raw chunk's frames, keys and metadata."""
+    return f"chunk_{chunk_id:04d}"
+
+
+def chunk_sidecar_path(chunk_dir: Path, chunk_id: int, kind: str) -> Path:
+    """Path of a raw chunk's JSON companion file (``kind`` is ``keys`` or ``meta``)."""
+    return chunk_dir / f"{chunk_stem(chunk_id)}_{kind}.json"
+
+
 def _write_chunk(
     chunk_dir: Path,
     chunk_id: int,
@@ -165,12 +176,12 @@ def _write_chunk(
     """Save one chunk to disk (frames + keys + metadata)."""
     n = len(frames)
 
-    np.save(chunk_dir / f"chunk_{chunk_id:04d}_frames.npy", frames)
+    write_shard(chunk_dir, chunk_stem(chunk_id), {"frames": frames})
 
     start_frame = chunk_id * frames_per_chunk
     end_frame = start_frame + n
     keys_slice = raw_keys[start_frame:end_frame]
-    with open(chunk_dir / f"chunk_{chunk_id:04d}_keys.json", "w") as f:
+    with open(chunk_sidecar_path(chunk_dir, chunk_id, "keys"), "w") as f:
         json.dump(keys_slice, f)
 
     meta = ChunkMetadata(
@@ -185,7 +196,7 @@ def _write_chunk(
         video_fps=fps,
         effective_fps=fps,
     )
-    with open(chunk_dir / f"chunk_{chunk_id:04d}_meta.json", "w") as f:
+    with open(chunk_sidecar_path(chunk_dir, chunk_id, "meta"), "w") as f:
         json.dump(asdict(meta), f, indent=2)
 
 

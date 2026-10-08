@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Self
 
 import numpy as np
 
-from constants import KEY_ORDER
+from constants import KEY_ORDER, STEP_HZ
 from container.sidecar import protocol
 from container.sidecar.protocol import (
     FrameHeader,
@@ -17,7 +17,6 @@ from container.sidecar.protocol import (
     ProtocolError,
     ResetMode,
 )
-from live.backend import STEP_HZ
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -62,7 +61,7 @@ class RemoteGame:
         self._needs_relaunch = False
         self.last_late_ms = 0.0
         try:
-            self.hello = self._handshake()
+            self._handshake()
         except BaseException:
             self._socket.close()
             raise
@@ -123,7 +122,7 @@ class RemoteGame:
     def __exit__(self, *args: object) -> None:
         self.close()
 
-    def _handshake(self) -> HelloReply:
+    def _handshake(self) -> None:
         """Exchange HELLO and verify the sidecar is compatible."""
         protocol.send_message(self._socket, MessageType.HELLO, protocol.pack_hello())
         hello = HelloReply.unpack(self._expect(MessageType.HELLO_REPLY))
@@ -141,7 +140,6 @@ class RemoteGame:
             raise ProtocolError(
                 f"sidecar runs at {hello.tick_hz} Hz, expected {STEP_HZ} Hz"
             )
-        return hello
 
     def _expect(self, expected: MessageType) -> bytes:
         """Read one reply and return its payload.

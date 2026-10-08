@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import pytest
 
-from container.sidecar.keys import KEY_ORDER, KEYSYM_NAMES, KeyTracker
+from constants import KEY_ORDER
+from container.sidecar.keys import KEYSYM_NAMES, KeyTracker
 from container.sidecar.menu import (
     MenuConfig,
     Tap,

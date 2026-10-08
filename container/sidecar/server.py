@@ -7,8 +7,8 @@ import select
 import socket
 from typing import TYPE_CHECKING, Protocol
 
+from constants import KEY_ORDER
 from container.sidecar import protocol
-from container.sidecar.keys import KEY_ORDER
 from container.sidecar.protocol import (
     FrameHeader,
     HelloReply,
@@ -165,7 +165,7 @@ class ClientHandler:
             )
         width, height = self._control.frame_size
         reply = HelloReply(
-            protocol.PROTOCOL_VERSION, width, height, self._tick_hz, KEY_ORDER
+            protocol.PROTOCOL_VERSION, width, height, self._tick_hz, tuple(KEY_ORDER)
         )
         protocol.send_message(self._connection, MessageType.HELLO_REPLY, reply.pack())
 

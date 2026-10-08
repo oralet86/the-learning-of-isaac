@@ -11,7 +11,8 @@ from typing import TYPE_CHECKING, Protocol
 
 import numpy as np
 
-from live.backend import STEP_HZ
+from constants import STEP_HZ
+from container.sidecar.pacer import Pacer
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -68,10 +69,7 @@ class LocalGame:
         """
         self._stream = stream
         self._sender = sender
-        self._period = 1.0 / step_hz
-        self._clock = clock
-        self._sleep = sleep
-        self._deadline: float | None = None
+        self._pacer = Pacer(step_hz, clock=clock, sleep=sleep)
         self.last_late_ms = 0.0
 
     def reset(self) -> np.ndarray:
@@ -81,13 +79,13 @@ class LocalGame:
         safely), so this does not touch the game's menus.
         """
         self._sender.release_all()
-        self._deadline = None
+        self._pacer.reset()
         return self._newest_frame()
 
     def step(self, keys: Sequence[int]) -> np.ndarray:
         """Hold *keys* until the next control tick and return the newest frame."""
         self._sender.apply_vector(list(keys))
-        self._wait_for_tick()
+        self.last_late_ms = self._pacer.wait_next()
         return self._newest_frame()
 
     def release_all(self) -> None:
@@ -101,20 +99,6 @@ class LocalGame:
     def close(self) -> None:
         """Release keys; the stream and sender stay open for their owner."""
         self._sender.release_all()
-
-    def _wait_for_tick(self) -> None:
-        """Sleep until the next deadline, restarting the schedule if late."""
-        now = self._clock()
-        if self._deadline is None:
-            self._deadline = now
-        self._deadline += self._period
-        remaining = self._deadline - now
-        if remaining >= 0:
-            self._sleep(remaining)
-            self.last_late_ms = 0.0
-        else:
-            self._deadline = now
-            self.last_late_ms = -remaining * 1000.0
 
     def _newest_frame(self) -> np.ndarray:
         """Drain queued frames and return the most recent one as uint8.
