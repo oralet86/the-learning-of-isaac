@@ -40,10 +40,9 @@ import obsws_python as obs
 from obsws_python.error import OBSSDKError
 
 # PySide6 is only needed for --debug mode's Qt viewer (see main()) -- kept
-# out of the module-level imports so importing StreamGame alone (the
-# capture daemon's actual hot path, see datagen/daemon.py) never pulls in
-# Qt at all. That keeps PySide6 out of environments where the daemon
-# never runs --debug.
+# out of the module-level imports so importing StreamGame alone never
+# pulls in Qt at all. That keeps PySide6 out of environments that never
+# run --debug.
 
 # ---------------------------------------------------------------------------
 # Constants

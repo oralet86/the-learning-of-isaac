@@ -28,13 +28,6 @@ PROCESSED_DATA_DIR: Path = DATA_DIR / Path("processed_recorded_gameplay")
 DATA_CHUNKS_DIR: Path = DATA_DIR / Path("recorded_gameplay_chunks")
 INVERSE_DYNAMIC_RUNS_DIR: Path = DATA_DIR / Path("id_runs")
 
-# datagen ground-truth data: raw 1920x1080 captures, and the augmented
-# 480x270 training set derived from them (datagen.augment).
-DATAGEN_OUTPUT_DIR: Path = Path(__file__).parent / "datagen" / "output"
-DATAGEN_AUGMENTED_OUTPUT_DIR: Path = (
-    Path(__file__).parent / "datagen" / "output_augmented"
-)
-
 KEY_ORDER = [
     "w",
     "a",
@@ -75,6 +68,15 @@ LR_SCHEDULE_FACTOR = 0.2
 PATIENCE = 10
 NUM_WORKERS = 4
 
+# Dynamic Weight Averaging (DWA) per-head loss weights, applied once per
+# epoch after validation. The EMA smooths per-head val losses (masked heads
+# average over few samples and are noisy); the temperature controls how
+# aggressively weights rebalance (lower = more); the floor keeps a
+# permanently stuck head's weight from collapsing toward zero.
+DWA_EMA_ALPHA = 0.85
+DWA_TEMPERATURE = 1.0
+DWA_FLOOR_FRAC = 0.05
+
 WORST_PRED_BATCH_SIZE = 256
 TOP_K_WORST_PREDS = 4
 EPSILON = 1e-8
@@ -83,9 +85,9 @@ RUN_TIMESTAMP_FORMAT = "%Y%m%d_%H%M"
 
 # Profiling
 
-PROFILE_WAIT = 50
-PROFILE_WARMUP = 50
-PROFILE_STEPS = 200
+PROFILE_WAIT = 10
+PROFILE_WARMUP = 10
+PROFILE_STEPS = 50
 
 # Run modes
 

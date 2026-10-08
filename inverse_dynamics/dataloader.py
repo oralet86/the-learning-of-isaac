@@ -4,7 +4,8 @@ The dataset stores each run as a contiguous .npy of frames and a parallel
 .npy of per-frame labels.  A per-frame split mask (train/val/test) is also
 stored per run.  WindowedDataset builds sliding-window sample indices at
 construction time, filtering to a specific split.  Frame data is
-memory-mapped so the memory footprint does not grow with the number of runs.
+memory-mapped (via `components.shard_store`) so the memory footprint does
+not grow with the number of runs.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from torch.utils.data import Dataset
 from components.data_loading import (
     build_loader,  # noqa: F401  (re-exported for inverse_dynamics.train)
 )
+from components.shard_store import ShardedArrayStore
 from constants import SEED
 
 if TYPE_CHECKING:
@@ -38,11 +40,12 @@ _SPLIT_MAP: dict[str, int] = {
 class WindowedDataset(Dataset[tuple[Tensor, Tensor]]):
     """Dynamically builds frame windows from per-run contiguous frame files.
 
-    Each run is stored as three files under ``processed_dir``::
+    Each run is stored as three files under ``processed_dir``, named
+    ``{run_dir}_chunk_{id:04d}_*`` by ``inverse_dynamics.preprocess``::
 
-        run_0000_frames.npy   - (N, H, W) uint8
-        run_0000_labels.npy   - (N, K) uint8
-        run_0000_split.npy    - (N,) int8  (1=train, 2=val, 3=test)
+        run_0000_chunk_0000_frames.npy   - (N, H, W) uint8
+        run_0000_chunk_0000_labels.npy   - (N, K) uint8
+        run_0000_chunk_0000_split.npy    - (N,) int8  (1=train, 2=val, 3=test)
 
     The dataset scans all runs, enumerates valid window starting positions,
     and retains only those whose *label frame* (determined by ``label_index``
@@ -70,55 +73,28 @@ class WindowedDataset(Dataset[tuple[Tensor, Tensor]]):
         self.stride = stride
         self.data_frac = data_frac
 
-        self._frame_paths: list[Path] = []
-        self._label_paths: list[Path] = []
-        self._split_paths: list[Path] = []
+        # Runs are `.npy` shards of three parallel arrays; the store owns
+        # discovery, row counts, lazy memory-mapping, and the pickling that
+        # lets `DataLoader` workers reopen the maps.
+        self._store = ShardedArrayStore(
+            processed_dir, ("frames", "labels", "split"), stem_prefix="run"
+        )
         self._run_lengths: list[int] = []
-        self._frame_mmaps: list[np.ndarray] = []
-        self._label_mmaps: list[np.ndarray] = []
-        self._split_masks: list[np.ndarray] = []
 
         self._samples: list[tuple[int, int]] = []
 
-        self._discover_runs()
         self._build_index()
-
-    # ------------------------------------------------------------------
-    # Run discovery
-    # ------------------------------------------------------------------
-
-    def _discover_runs(self) -> None:
-        frame_files = sorted(self.processed_dir.glob("run_*_frames.npy"))
-        for frame_path in frame_files:
-            stem = frame_path.name.replace("_frames.npy", "")
-            label_path = self.processed_dir / f"{stem}_labels.npy"
-            split_path = self.processed_dir / f"{stem}_split.npy"
-            if not label_path.exists() or not split_path.exists():
-                continue
-            self._frame_paths.append(frame_path)
-            self._label_paths.append(label_path)
-            self._split_paths.append(split_path)
 
     # ------------------------------------------------------------------
     # Sample index
     # ------------------------------------------------------------------
 
     def _build_index(self) -> None:
-        if not self._frame_paths:
-            return
+        # Run lengths come from the `.npy` headers, so indexing every run
+        # never faults in a byte of frame data.
+        self._run_lengths = self._store.shard_lengths
 
-        for run_idx in range(len(self._frame_paths)):
-            # Determine run length from mmap shape (load lazily here)
-            frame_path = self._frame_paths[run_idx]
-            with open(frame_path, "rb") as f:
-                version = np.lib.format.read_magic(f)
-                if version[0] == 1:
-                    shape, _, _ = np.lib.format.read_array_header_1_0(f)
-                else:
-                    shape, _, _ = np.lib.format.read_array_header_2_0(f)
-            n_frames = int(shape[0])
-            self._run_lengths.append(n_frames)
-
+        for run_idx, n_frames in enumerate(self._run_lengths):
             # Max valid window start: last frame must be in-bounds
             last_frame_pos = (self.window_size - 1) * self.stride
             max_start = n_frames - last_frame_pos - 1
@@ -126,8 +102,7 @@ class WindowedDataset(Dataset[tuple[Tensor, Tensor]]):
                 continue
 
             # Load split mask to filter by label frame
-            split_mask = np.load(self._split_paths[run_idx], mmap_mode="r")
-            self._split_masks.append(split_mask)
+            split_mask = self._store.array(run_idx, "split")
 
             for frame_start in range(max_start + 1):
                 label_pos = frame_start + self.label_index * self.stride
@@ -139,22 +114,6 @@ class WindowedDataset(Dataset[tuple[Tensor, Tensor]]):
             n_keep = max(1, int(len(self._samples) * self.data_frac))
             idx = rng.choice(len(self._samples), size=n_keep, replace=False)
             self._samples = [self._samples[i] for i in sorted(idx)]
-
-    # ------------------------------------------------------------------
-    # File I/O helpers
-    # ------------------------------------------------------------------
-
-    def _ensure_mmaps(self) -> None:
-        """Open memory-maps lazily (once, after potential unpickle)."""
-        if len(self._frame_mmaps) == len(self._frame_paths) > 0:
-            return
-        self._frame_mmaps = []
-        self._label_mmaps = []
-        self._split_masks = []
-        for i in range(len(self._frame_paths)):
-            self._frame_mmaps.append(np.load(self._frame_paths[i], mmap_mode="r"))
-            self._label_mmaps.append(np.load(self._label_paths[i], mmap_mode="r"))
-            self._split_masks.append(np.load(self._split_paths[i], mmap_mode="r"))
 
     # ------------------------------------------------------------------
     # Dataset protocol
@@ -172,11 +131,9 @@ class WindowedDataset(Dataset[tuple[Tensor, Tensor]]):
                 f"Index {index} out of range for dataset of size {len(self)}"
             )
 
-        self._ensure_mmaps()
-
         run_idx, frame_start = self._samples[index]
-        frame_mmap = self._frame_mmaps[run_idx]
-        label_mmap = self._label_mmaps[run_idx]
+        frame_mmap = self._store.array(run_idx, "frames")
+        label_mmap = self._store.array(run_idx, "labels")
 
         # Build strided indices
         indices = np.arange(
@@ -194,18 +151,3 @@ class WindowedDataset(Dataset[tuple[Tensor, Tensor]]):
             torch.from_numpy(frames),
             torch.from_numpy(label.copy()),
         )
-
-    # ------------------------------------------------------------------
-    # Pickle support (for multiprocessing DataLoader workers)
-    # ------------------------------------------------------------------
-
-    def __getstate__(self) -> dict[str, object]:
-        state = self.__dict__.copy()
-        # Drop mmap objects — workers reopen them via _ensure_mmaps()
-        state["_frame_mmaps"] = []
-        state["_label_mmaps"] = []
-        state["_split_masks"] = []
-        return state
-
-    def __setstate__(self, state: dict[str, object]) -> None:
-        self.__dict__.update(state)

@@ -1,0 +1,53 @@
+# Isaac environment image: Wine + Xvfb + Mesa software rendering + sidecar
+FROM python:3.14-slim-bookworm
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    WINEPREFIX=/opt/prefix \
+    WINEARCH=win32 \
+    WINEDEBUG=-all \
+    LIBGL_ALWAYS_SOFTWARE=1 \
+    GALLIUM_DRIVER=llvmpipe \
+    LP_NUM_THREADS=2 \
+    PYTHONUNBUFFERED=1
+
+# isaac-ng.exe is PE32 (32-bit): 32-bit Wine only, no wine64
+RUN dpkg --add-architecture i386 && apt-get update && apt-get install -y --no-install-recommends \
+        wine wine32 \
+        xvfb x11-utils xdotool \
+        libgl1 libgl1:i386 \
+        libgl1-mesa-dri libgl1-mesa-dri:i386 libglx-mesa0 libglx-mesa0:i386 \
+        ca-certificates procps \
+    && rm -rf /var/lib/apt/lists/*
+
+# Sidecar runtime dependencies (the sidecar itself is copied at the end)
+RUN pip install --no-cache-dir python-xlib numpy
+
+# Bake the Wine prefix into the image so it is never created at runtime
+# Xvfb is started directly (xvfb-run needs xauth, which isn't installed).
+# Its lock file and socket dir are removed so they are not baked into the layer;
+# a stale lock makes Xvfb refuse to start when the recorded PID is reused.
+# mscoree/mshtml disabled so wineboot doesn't block on Mono/Gecko install prompts.
+RUN Xvfb :99 -nolisten tcp & XPID=$!; sleep 2; \
+    DISPLAY=:99 WINEDLLOVERRIDES="mscoree,mshtml=" wineboot --init && wineserver -w; \
+    status=$?; kill $XPID; wait $XPID; \
+    rm -rf /tmp/.X99-lock /tmp/.X11-unix /tmp/wine-*; exit $status
+
+ENV WINEDLLOVERRIDES="mscoree,mshtml="
+
+# Your Steam-less game copy, placed next to this file as ./isaac/
+COPY isaac/ /opt/isaac/
+
+# Fully unlocked save, placed next to this file as ./save/ (exactly one .dat).
+# The game reads slot 1 from its Documents folder, which Wine maps to $HOME.
+# (JSON form because the destination path contains spaces)
+COPY ["save/*.dat", "/root/My Games/Binding of Isaac Repentance+/persistentgamedata1.dat"]
+
+# Sidecar sources last, so editing them does not invalidate the game layer.
+# They keep their repo package path (container.sidecar) under /opt/app.
+COPY __init__.py /opt/app/container/__init__.py
+COPY sidecar/ /opt/app/container/sidecar/
+COPY --chmod=755 entrypoint.sh /entrypoint.sh
+
+# Sidecar TCP port (see container/sidecar/protocol.py)
+EXPOSE 5599
+ENTRYPOINT ["/entrypoint.sh"]

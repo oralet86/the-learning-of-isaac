@@ -1,13 +1,10 @@
 """Smaller modules, meant to be used to make other models."""
 
-from typing import TYPE_CHECKING, Protocol, override
+from typing import override
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F  # noqa: N812
-
-if TYPE_CHECKING:
-    from collections.abc import Sequence
 
 _RESIDUAL_DROPOUT = 0.1
 _HEAD_HIDDEN_DIM = 32
@@ -175,118 +172,6 @@ class GroupedNeckHead(nn.Module):
             [branch(x) for branch in self.softmax_branches], dim=1
         )
         return sigmoid_logits, softmax_logits
-
-
-class _HeadSpecLike(Protocol):
-    """Structural shape `GroundTruthHead` needs from a per-head spec.
-
-    Deliberately a `Protocol`, not an import of
-    `visual_extraction.labels.HeadSpec` -- this file has no other
-    dependency on `visual_extraction` (the IDM models importing
-    `ResidualBlock`/`GroupedNeckHead` from here have nothing to do with
-    that package), and `HeadSpec` already has every field below, so it
-    satisfies this structurally with no coupling required in either
-    direction.
-    """
-
-    @property
-    def name(self) -> str: ...
-    @property
-    def out_dim(self) -> int: ...
-    @property
-    def kind(self) -> str: ...
-    @property
-    def pred_shape(self) -> tuple[int, ...]: ...
-    @property
-    def spatial(self) -> bool: ...
-
-
-def _scalar_neck(in_features: int, out_dim: int) -> nn.Module:
-    """`Linear(in, H) -> ReLU -> Linear(H, out_dim)` off a globally-pooled feature."""
-    return nn.Sequential(
-        nn.Linear(in_features, _HEAD_HIDDEN_DIM),
-        nn.ReLU(inplace=True),
-        nn.Linear(_HEAD_HIDDEN_DIM, out_dim),
-    )
-
-
-def _spatial_neck(in_features: int, out_channels: int) -> nn.Module:
-    """`Conv1x1(in, H) -> ReLU -> Conv1x1(H, out_channels)` over a grid-pooled feature."""
-    return nn.Sequential(
-        nn.Conv2d(in_features, _HEAD_HIDDEN_DIM, 1),
-        nn.ReLU(inplace=True),
-        nn.Conv2d(_HEAD_HIDDEN_DIM, out_channels, 1),
-    )
-
-
-class GroundTruthHead(nn.Module):
-    """One small head per spec in `specs`, split into scalar and spatial groups.
-
-    Generalizes `GroupedNeckHead`'s "every output gets its own nonlinear
-    neck off a shared pooled feature" pattern to an arbitrary, data-driven
-    list of heads (rather than a fixed sigmoid/softmax split): every spec
-    in `specs` gets a `Linear(in, H) -> ReLU -> Linear(H, out_dim)` or
-    `Conv1x1(in, H) -> ReLU -> Conv1x1(H, out_channels)` neck, and
-    `forward` returns a `dict[str, Tensor]` keyed by `spec.name`.
-
-    `specs` splits into two static, fixed-order groups at construction
-    time via `spec.spatial` (a compile-time-constant attribute, never a
-    runtime name comparison):
-
-    - Scalar heads (`spatial=False`) run off `pooled` -- a single vector
-      per sample, through `_scalar_neck`.
-    - Spatial heads (`spatial=True`) run off `grid` -- a
-      `detection_grid`-shaped feature map, through `_spatial_neck`, so a
-      per-cell prediction isn't forced through a single flattened vector
-      first (which would throw away exactly the spatial information those
-      heads need).
-
-    Each group is still a single static, uniform, branch-free loop over a
-    fixed-length container -- exactly what `torch.compile`'s Dynamo traces
-    most cleanly -- just two such loops instead of one, since scalar and
-    spatial heads genuinely need different neck architectures (linear vs.
-    conv) and different pooled inputs.
-    """
-
-    def __init__(
-        self,
-        in_features: int,
-        specs: Sequence[_HeadSpecLike],
-        detection_grid: tuple[int, int],
-    ) -> None:
-        super().__init__()
-        self._scalar_specs = tuple(spec for spec in specs if not spec.spatial)
-        self._spatial_specs = tuple(spec for spec in specs if spec.spatial)
-        self.scalar_heads = nn.ModuleList(
-            _scalar_neck(in_features, spec.out_dim) for spec in self._scalar_specs
-        )
-        # A spatial head's `pred_shape` is either channel-first
-        # (classification, matching F.cross_entropy's K-dimensional form)
-        # or channel-last (everything else, matching a plain elementwise
-        # target) -- see `forward`'s permute below. Either way, per-head
-        # channel count is derived from `out_dim // grid_cells` rather
-        # than hardcoded, so this stays generic across however many
-        # spatial heads `specs` contains.
-        grid_cells = detection_grid[0] * detection_grid[1]
-        self.spatial_heads = nn.ModuleList(
-            _spatial_neck(in_features, spec.out_dim // grid_cells)
-            for spec in self._spatial_specs
-        )
-
-    @override
-    def forward(
-        self, pooled: torch.Tensor, grid: torch.Tensor
-    ) -> dict[str, torch.Tensor]:
-        outputs: dict[str, torch.Tensor] = {
-            spec.name: head(pooled).view(-1, *spec.pred_shape)
-            for spec, head in zip(self._scalar_specs, self.scalar_heads, strict=True)
-        }
-        for spec, head in zip(self._spatial_specs, self.spatial_heads, strict=True):
-            out = head(grid)
-            if spec.kind != "classification":
-                out = out.permute(0, 2, 3, 1)
-            outputs[spec.name] = out.reshape(-1, *spec.pred_shape)
-        return outputs
 
 
 class GroupedKeyLoss(nn.Module):

@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""End-to-end live gameplay loop.
+"""Inference-mode entry point: the agent plays the real game on this machine.
+
+Frames come from OBS and keys go out through uinput, so the game itself is
+untouched. Start the run by hand, then hand control to the agent.
 
 Press ``h`` to toggle agent control on/off (starts OFF).
 Press ``Ctrl+C`` to exit.
@@ -16,22 +19,25 @@ import sys
 import numpy as np
 from pynput import keyboard
 
+from constants import KEY_ORDER
 from live.action import ActionSender
+from live.backend import STEP_HZ
 from live.env import IsaacEnv
+from live.local import LocalGame
 from live.model import RandomAgent
 from live.preprocess import FramePreprocessor
 from live.stream_game import StreamGame
 
-_RELEASE_ALL = [0] * 13
+_RELEASE_ALL = [0] * len(KEY_ORDER)
+_REPORT_EVERY_STEPS = STEP_HZ * 5
 
 
 def main() -> None:
     sender = ActionSender()
     stream = StreamGame()
-    preprocessor = FramePreprocessor()
     agent = RandomAgent()
 
-    env = IsaacEnv(stream, sender, preprocessor)
+    env = IsaacEnv(LocalGame(stream, sender), FramePreprocessor())
 
     if not sender.focus_game():
         sys.exit(1)
@@ -63,6 +69,7 @@ def main() -> None:
     print("Live loop running.  Press 'h' to toggle, Ctrl+C to stop.\n")
 
     prev_active = False
+    steps = 0
 
     try:
         while True:
@@ -70,32 +77,30 @@ def main() -> None:
             if toggle_active != prev_active:
                 prev_active = toggle_active
                 if toggle_active:
-                    print(f"  Agent: ON  (frame {stream.frame_count})")
+                    print(f"  Agent: ON  (step {steps})")
                 else:
                     sender.release_all()
-                    print(f"  Agent: OFF (frame {stream.frame_count})")
+                    print(f"  Agent: OFF (step {steps})")
 
-            if toggle_active:
-                action = agent.predict(obs)
-                obs, _, _, _, _ = env.step(np.array(action))
-            else:
-                obs, _, _, _, _ = env.step(np.array(_RELEASE_ALL))
+            action = agent.predict(obs) if toggle_active else _RELEASE_ALL
+            obs, _, terminated, _, info = env.step(np.array(action))
+            steps += 1
 
-            if stream.frame_count % 120 == 0:
+            if terminated:
+                print(f"  Run ended (step {steps}); agent OFF")
+                toggle_active = False
+
+            if steps % _REPORT_EVERY_STEPS == 0:
                 print(
-                    f"  frame {stream.frame_count:>6}  fps {stream.effective_fps:5.1f}"
+                    f"  step {steps:>6}  capture fps {stream.effective_fps:5.1f}"
+                    f"  late {info['late_ms']:5.1f} ms"
                 )
 
     except KeyboardInterrupt:
         print("\nStopping...")
-    else:
-        print(
-            f"\nERROR: stream ended after {stream.frame_count} frames",
-            file=sys.stderr,
-        )
-        sys.exit(1)
     finally:
         listener.stop()
+        env.close()
         stream.stop()
         sender.close()
 
