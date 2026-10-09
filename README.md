@@ -131,7 +131,7 @@ from live.vector import make_vector_env, pause_all
 with ContainerFleet(FleetConfig(num_envs=4)) as fleet:
     envs = make_vector_env(fleet.endpoints, max_episode_steps=600)
     try:
-        observations, _ = envs.reset()  # menu navigation, about 45 s
+        observations, _ = envs.reset()  # menu navigation, about 25 s
         for _ in range(1000):
             actions = envs.action_space.sample()
             observations, rewards, terminated, truncated, infos = envs.step(actions)
@@ -151,26 +151,39 @@ with ContainerFleet(FleetConfig(num_envs=4)) as fleet:
 
 - **Real time**: the game never waits for the trainer. Keys stay held between
   steps.
-- **Pausing**: if a sidecar receives nothing for 0.25 s it releases all keys
+- **Pausing**: if a sidecar receives nothing for 1 s it releases all keys
   and opens the pause menu; the next step closes it. The sidecar checks the
   screen after each press, so the toggle cannot drift out of sync.
 - **Resets**: the first reset walks the menus (skip intro, file select, new
-  run, "Random Character"). Later resets hold `R` for a quick restart. If a
-  step fails, the next reset relaunches the game.
+  run, "Random Character"). Later resets hold `R` for a quick restart (about
+  4 s). If a step fails, the next reset relaunches the game.
+- **Navigation is closed-loop**: the sidecar recognises each menu screen,
+  presses the one key it calls for and waits for the screen to change, so
+  loading times and the screen it starts from do not matter. A reset only
+  returns once the run's pause menu has opened, which proves the game is in a
+  run. If the menus do not lead to a run in time, the reset fails with the
+  screen it was stuck on.
+
+The screens are recognised by comparing frames against references in
+`container/sidecar/screens.npz`, recorded from a 16:9 window of this game
+version. If a game update redraws a menu, record them again: take a
+screenshot of each screen with
+`podman exec <container> python3 -m container.sidecar.screenshot /tmp/<name>.npy`,
+copy them out with `podman cp`, and run
+`python -m container.build_screens <directory>` (it lists the names).
 
 ### Tuning a container
 
 Pass these as environment variables to a container (for example
-`podman run -e MENU_BOOT_WAIT_S=30 ...`):
+`podman run -e MENU_NAVIGATION_TIMEOUT_S=600 ...`):
 
 | Variable | Default | Meaning |
 |---|---|---|
 | `GAME_WIDTH`, `GAME_HEIGHT` | `480`, `270` | Game window size |
-| `IDLE_PAUSE_S` | `0.25` | Silence before auto-pause; `0` disables it |
-| `MENU_BOOT_WAIT_S` | `20` | Wait after the window appears before pressing keys |
-| `MENU_RANDOM_LEFT_PRESSES` | `1` | Left presses from the default character to "Random" |
-| `MENU_RUN_START_WAIT_S` | `10` | Wait after confirming the character |
-| `LOG_LEVEL` | `INFO` | Set to `DEBUG` to log pause-menu checks |
+| `IDLE_PAUSE_S` | `1.0` | Silence before auto-pause; `0` disables it. Must exceed the 0.5 s a resume takes |
+| `MENU_NAVIGATION_TIMEOUT_S` | `180` | Give up when the menus have not led to a run after this long |
+| `MENU_PRESS_RETRY_S` | `4` | Press again when a menu has not reacted for this long |
+| `LOG_LEVEL` | `INFO` | Sidecar log level |
 
 All menu timings are fields of `MenuConfig` in `container/sidecar/menu.py`;
 each can be overridden as `MENU_<FIELD_NAME>`.
@@ -267,7 +280,9 @@ container/
   Containerfile        Image: Wine, Xvfb, Mesa software rendering, sidecar
   build.py             Builds the image with values taken from the Python code
   sidecar/             Runs inside the container: capture, key injection,
-                       pacing, menu scripts, pausing, TCP server
+                       pacing, screen recognition, menu navigation,
+                       pausing, TCP server
+  build_screens.py     Rebuilds the screen references from screenshots
 live/
   env.py               IsaacEnv (Gymnasium)
   backend.py           Interface both backends implement
@@ -302,8 +317,8 @@ against the real request handler on a loopback socket.
   empty starting room, so leave headroom when choosing `--num-envs`.
 - The sidecar pre-accepts the game's first-run beta notice through an option
   whose name contains the game version (`container/sidecar/game.py`). After a
-  game update the notice returns and the menu script will stall until that
-  name is updated.
+  game update the notice returns and resets fail with an unrecognised screen
+  until that name is updated.
 - Frames from the containers are rendered in software at a small window size,
   while inference frames come from your real game through OBS. Compare the two
   after preprocessing before trusting a policy trained in one and run in the

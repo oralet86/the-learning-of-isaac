@@ -45,6 +45,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--base-port", type=int, default=DEFAULT_BASE_PORT)
     parser.add_argument("--game-width", type=int, default=DEFAULT_GAME_WIDTH)
     parser.add_argument("--game-height", type=int, default=DEFAULT_GAME_HEIGHT)
+    parser.add_argument(
+        "--gpu-device",
+        default=None,
+        help="DRM render node to render the games on, e.g. /dev/dri/renderD129 "
+        "(default: software rendering)",
+    )
     return parser.parse_args()
 
 
@@ -107,6 +113,7 @@ def main() -> None:
         base_port=args.base_port,
         game_width=args.game_width,
         game_height=args.game_height,
+        gpu_device=args.gpu_device,
     )
     with ContainerFleet(config) as fleet:
         run_rollout(args.num_envs, fleet.endpoints, args)

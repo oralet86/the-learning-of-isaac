@@ -1,4 +1,4 @@
-"""Tests for the sidecar's key tracking, tick pacing and menu scripts.
+"""Tests for the sidecar's key tracking, tick pacing and menu navigation.
 
 These are the pieces that decide *what* is pressed and *when*; they are
 exercised with a recording keyboard and a manual clock, so no X server or
@@ -11,16 +11,10 @@ import pytest
 
 from constants import KEY_ORDER
 from container.sidecar.keys import KEYSYM_NAMES, KeyTracker
-from container.sidecar.menu import (
-    MenuConfig,
-    Tap,
-    Wait,
-    boot_script,
-    restart_script,
-    run_script,
-)
+from container.sidecar.menu import MenuConfig, MenuNavigator, NavigationError, tap
 from container.sidecar.pacer import Pacer
-from container.tests.fakes import FakeClock, FakeKeyboard
+from container.sidecar.screens import Screen
+from container.tests.fakes import FakeClock, FakeKeyboard, FakeMenuGame
 
 # --- KeyTracker -----------------------------------------------------------
 
@@ -113,51 +107,109 @@ def test_pacer_rejects_non_positive_rate() -> None:
         Pacer(0)
 
 
-# --- Menu scripts ---------------------------------------------------------
+# --- Menu navigation ------------------------------------------------------
+
+_MENUS_FROM_INTRO = [
+    Screen.INTRO,
+    Screen.TITLE,
+    Screen.FILE_SELECT,
+    Screen.MAIN_MENU,
+    Screen.CHARACTER_SELECT,
+]
 
 
-def _tapped_keys(steps: list[Wait | Tap]) -> list[str]:
-    return [step.key for step in steps if isinstance(step, Tap)]
-
-
-def test_boot_script_key_sequence_follows_config() -> None:
-    config = MenuConfig(
-        intro_skip_presses=1, menu_enter_presses=3, random_left_presses=2
+def _navigator(game: FakeMenuGame, config: MenuConfig | None = None) -> MenuNavigator:
+    return MenuNavigator(
+        game.grab,
+        game.keyboard,
+        game,
+        config if config is not None else MenuConfig(),
+        clock=game.clock,
+        sleep=game.clock.sleep,
     )
 
-    steps = boot_script(config)
 
-    assert steps[0] == Wait(config.boot_wait_s)
-    assert _tapped_keys(steps) == ["enter"] * 4 + ["left"] * 2 + ["enter"]
-    assert steps[-1] == Wait(config.run_start_wait_s)
-
-
-def test_restart_script_holds_r() -> None:
-    config = MenuConfig(restart_hold_s=1.5)
-    assert restart_script(config)[0] == Tap("r", 1.5)
-
-
-def test_run_script_presses_holds_and_releases_in_order() -> None:
+def test_tap_holds_the_key_before_releasing_it() -> None:
     keyboard = FakeKeyboard()
     clock = FakeClock()
 
-    run_script([Wait(2.0), Tap("enter", 0.1), Wait(1.0)], keyboard, clock.sleep)
+    tap(keyboard, "enter", 0.1, clock.sleep)
 
     assert keyboard.events == [("press", "enter"), ("release", "enter")]
-    assert clock.sleeps == [2.0, 0.1, 1.0]
+    assert clock.sleeps == [0.1]
     assert keyboard.flushes == 2
 
 
-def test_menu_config_env_overrides_keep_field_types() -> None:
-    config = MenuConfig.from_env(
-        {"MENU_BOOT_WAIT_S": "5", "MENU_RANDOM_LEFT_PRESSES": "3", "OTHER": "x"}
-    )
+def test_navigator_walks_every_menu_from_the_intro_to_a_random_run() -> None:
+    game = FakeMenuGame(_MENUS_FROM_INTRO)
 
-    assert config.boot_wait_s == 5.0
-    assert config.random_left_presses == 3
+    _navigator(game).leave_menus(game.clock() + 60.0)
+
+    assert game.pressed == ["enter"] * 4 + ["left", "enter"]
+    assert game.screen is Screen.UNKNOWN
+
+
+def test_navigator_starts_from_whatever_screen_is_showing() -> None:
+    # The intro ended by itself before the reset arrived.
+    game = FakeMenuGame(_MENUS_FROM_INTRO[1:])
+
+    _navigator(game).leave_menus(game.clock() + 60.0)
+
+    assert game.pressed == ["enter"] * 3 + ["left", "enter"]
+
+
+def test_navigator_waits_out_loading_instead_of_pressing_blind() -> None:
+    game = FakeMenuGame(_MENUS_FROM_INTRO, loading_s=45.0, transition_s=8.0)
+
+    _navigator(game).leave_menus(game.clock() + 300.0)
+
+    assert game.pressed == ["enter"] * 4 + ["left", "enter"]
+
+
+def test_navigator_repeats_a_press_the_game_dropped() -> None:
+    game = FakeMenuGame(_MENUS_FROM_INTRO, dropped_presses=1)
+    config = MenuConfig()
+
+    started = game.clock()
+    _navigator(game, config).leave_menus(started + 60.0)
+
+    assert game.pressed == ["enter"] * 5 + ["left", "enter"]
+    assert game.clock() - started >= config.press_retry_s
+
+
+def test_navigator_presses_nothing_while_the_random_roll_plays() -> None:
+    # The roll shows other characters and flashes "Random" again; a Left or
+    # a second Enter during it would change or restart the selection.
+    game = FakeMenuGame(_MENUS_FROM_INTRO, roll_s=6.0)
+
+    _navigator(game).leave_menus(game.clock() + 60.0)
+
+    assert game.pressed == ["enter"] * 4 + ["left", "enter"]
+
+
+def test_navigator_fails_loudly_on_a_screen_it_cannot_leave() -> None:
+    game = FakeMenuGame([Screen.TITLE], dropped_presses=10_000)
+
+    with pytest.raises(NavigationError, match="'title'"):
+        _navigator(game).leave_menus(game.clock() + 30.0)
+
+
+def test_navigator_names_an_unrecognised_screen_when_it_gives_up() -> None:
+    game = FakeMenuGame([], loading_s=1e9)
+
+    with pytest.raises(NavigationError, match="'unknown'"):
+        _navigator(game).leave_menus(game.clock() + 30.0)
+
+    assert game.pressed == []
+
+
+def test_menu_config_env_overrides_keep_field_types() -> None:
+    config = MenuConfig.from_env({"MENU_NAVIGATION_TIMEOUT_S": "600", "OTHER": "x"})
+
+    assert config.navigation_timeout_s == 600.0
     assert config.tap_hold_s == MenuConfig().tap_hold_s
 
 
 def test_menu_config_rejects_unparseable_override() -> None:
-    with pytest.raises(ValueError, match="invalid literal"):
-        MenuConfig.from_env({"MENU_RANDOM_LEFT_PRESSES": "two"})
+    with pytest.raises(ValueError, match="could not convert"):
+        MenuConfig.from_env({"MENU_PRESS_RETRY_S": "soon"})

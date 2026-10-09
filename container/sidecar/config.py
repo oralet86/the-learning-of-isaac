@@ -38,13 +38,20 @@ class SidecarConfig:
         save_source_dir: Directory holding the one save file installed into
             slot 1 before every launch.
         display_num: X display number of the virtual screen.
+        gpu_device: DRM render node (e.g. ``/dev/dri/renderD129``) to render
+            the game on; ``None`` renders in software on the CPU. The device
+            must also be passed into the container.
         window_title: Substring identifying the game window's title.
         window_timeout_s: How long to wait for the game window after launch.
         window_settle_s: How long the window size must stay unchanged before
             it is trusted.
         idle_pause_s: Pause the game when the client has sent nothing for
             this long, so a stalled trainer does not leave the game running
-            unattended. ``0`` disables idle pausing.
+            unattended. ``0`` disables idle pausing. It has to be longer
+            than a step that first closes the pause menu: a trainer stepping
+            several games in lockstep answers only after the slowest one, so
+            a shorter limit makes each game that resumes pause all the
+            others, which then resume on the next step, without end.
         menu: Menu navigation timings.
     """
 
@@ -55,10 +62,11 @@ class SidecarConfig:
     game_dir: Path = DEFAULT_GAME_DIR
     save_source_dir: Path = DEFAULT_SAVE_SOURCE_DIR
     display_num: int = DEFAULT_DISPLAY_NUM
+    gpu_device: Path | None = None
     window_title: str = GAME_WINDOW_TITLE
     window_timeout_s: float = 120.0
     window_settle_s: float = 3.0
-    idle_pause_s: float = 0.25
+    idle_pause_s: float = 1.0
     menu: MenuConfig = field(default_factory=MenuConfig)
 
     @classmethod
@@ -66,7 +74,7 @@ class SidecarConfig:
         """Build a config from defaults plus environment overrides.
 
         Recognised variables: ``SIDECAR_PORT``, ``GAME_WIDTH``, ``GAME_HEIGHT``,
-        ``GAME_DIR``, ``SAVE_SOURCE_DIR``, ``DISPLAY_NUM``, ``WINDOW_TIMEOUT_S``,
+        ``GAME_DIR``, ``SAVE_SOURCE_DIR``, ``DISPLAY_NUM``, ``GPU_DEVICE``, ``WINDOW_TIMEOUT_S``,
         ``IDLE_PAUSE_S`` and the ``MENU_*``
         variables described in :class:`~container.sidecar.menu.MenuConfig`.
 
@@ -82,6 +90,9 @@ class SidecarConfig:
                 environ.get("SAVE_SOURCE_DIR", str(cls.save_source_dir))
             ),
             display_num=int(environ.get("DISPLAY_NUM", cls.display_num)),
+            gpu_device=Path(environ["GPU_DEVICE"])
+            if environ.get("GPU_DEVICE")
+            else None,
             window_timeout_s=float(
                 environ.get("WINDOW_TIMEOUT_S", cls.window_timeout_s)
             ),
@@ -96,5 +107,11 @@ class SidecarConfig:
         if config.idle_pause_s < 0:
             raise ValueError(
                 f"IDLE_PAUSE_S must not be negative, got {config.idle_pause_s}"
+            )
+        resume_s = config.menu.tap_hold_s + config.menu.resume_settle_s
+        if 0 < config.idle_pause_s <= resume_s:
+            raise ValueError(
+                f"IDLE_PAUSE_S must be 0 or more than the {resume_s:.2f}s that "
+                f"closing the pause menu takes, got {config.idle_pause_s}"
             )
         return config

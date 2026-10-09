@@ -24,8 +24,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 DEFAULT_CONNECT_TIMEOUT_S = 10.0
-# A reset navigates menus (or relaunches the game), so replies take a while.
-DEFAULT_REPLY_TIMEOUT_S = 180.0
+# A reset may relaunch the game and navigate its menus. The sidecar gives up
+# on those by itself (its window and navigation timeouts, 300 s together) and
+# reports why; this only has to outlast it.
+DEFAULT_REPLY_TIMEOUT_S = 360.0
 
 
 class SidecarError(RuntimeError):

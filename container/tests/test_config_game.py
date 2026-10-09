@@ -18,6 +18,7 @@ from container.sidecar.display import screen_size
 from container.sidecar.game import (
     clear_run_state,
     install_save,
+    launch_spec,
     options_path,
     render_options,
     write_options,
@@ -128,3 +129,35 @@ def test_build_command_passes_the_python_constants_to_the_image() -> None:
         "SAVE_SOURCE_DIR": str(DEFAULT_SAVE_SOURCE_DIR),
         "SIDECAR_PORT": str(DEFAULT_PORT),
     }
+
+
+def test_launch_spec_renders_in_software_without_a_gpu() -> None:
+    command, env = launch_spec(None)
+
+    assert command == ["wine", "isaac-ng.exe"]
+    assert env["LIBGL_ALWAYS_SOFTWARE"] == "1"
+
+
+def test_launch_spec_uses_virtualgl_with_a_gpu(tmp_path: Path) -> None:
+    command, env = launch_spec(tmp_path / "renderD129")
+
+    assert command[:3] == ["vglrun", "-d", "egl"]
+    assert command[-2:] == ["wine", "isaac-ng.exe"]
+    assert "LIBGL_ALWAYS_SOFTWARE" not in env
+
+
+def test_config_gpu_device_is_optional() -> None:
+    assert SidecarConfig.from_env({}).gpu_device is None
+    assert SidecarConfig.from_env({"GPU_DEVICE": ""}).gpu_device is None
+
+    config = SidecarConfig.from_env({"GPU_DEVICE": "/dev/dri/renderD129"})
+
+    assert str(config.gpu_device) == "/dev/dri/renderD129"
+
+
+def test_config_rejects_idle_limit_shorter_than_a_resume() -> None:
+    # Such a limit makes games stepped in lockstep pause each other forever.
+    with pytest.raises(ValueError, match="IDLE_PAUSE_S"):
+        SidecarConfig.from_env({"IDLE_PAUSE_S": "0.25"})
+
+    assert SidecarConfig.from_env({"IDLE_PAUSE_S": "0"}).idle_pause_s == 0.0

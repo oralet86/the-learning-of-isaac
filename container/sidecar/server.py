@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import select
 import socket
+import time
 from typing import TYPE_CHECKING, Protocol
 
 from constants import KEY_ORDER
@@ -115,6 +116,7 @@ class ClientHandler:
             return
         readable, _, _ = select.select([self._connection], [], [], self._idle_pause_s)
         if not readable:
+            logger.debug("client silent for %.2fs; pausing", self._idle_pause_s)
             self._control.pause()
 
     def _handle_one(self) -> bool:
@@ -123,6 +125,7 @@ class ClientHandler:
         message_type, payload = protocol.recv_message(self._connection)
         if message_type is MessageType.CLOSE:
             return False
+        started = time.monotonic()
         try:
             self._dispatch(message_type, payload)
         except ProtocolError:
@@ -132,6 +135,7 @@ class ClientHandler:
             # whether to retry (e.g. with a RELAUNCH reset) or give up.
             logger.exception("request %s failed", message_type.name)
             self._send_error(f"{type(error).__name__}: {error}")
+        logger.debug("%s took %.3fs", message_type.name, time.monotonic() - started)
         return True
 
     def _dispatch(self, message_type: MessageType, payload: bytes) -> None:

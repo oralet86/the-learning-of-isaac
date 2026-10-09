@@ -1,26 +1,37 @@
-# Isaac environment image: Wine + Xvfb + Mesa software rendering + sidecar
+# Isaac environment image: Wine + Xvfb + Mesa (software or GPU via VirtualGL) + sidecar
 #
 # Build with `python -m container.build` from the repository root: it supplies
 # the build arguments below from the same constants the Python code uses.
-FROM python:3.14-slim-bookworm
+FROM python:3.14-slim-trixie
 
 ENV DEBIAN_FRONTEND=noninteractive \
     WINEPREFIX=/opt/prefix \
     WINEARCH=win32 \
     WINEDEBUG=-all \
-    LIBGL_ALWAYS_SOFTWARE=1 \
-    GALLIUM_DRIVER=llvmpipe \
-    LP_NUM_THREADS=2 \
     PYTHONUNBUFFERED=1
 
 # isaac-ng.exe is PE32 (32-bit): 32-bit Wine only, no wine64
 RUN dpkg --add-architecture i386 && apt-get update && apt-get install -y --no-install-recommends \
-        wine wine32 \
+        wine wine32:i386 \
         xvfb x11-utils xdotool \
-        libgl1 libgl1:i386 \
+        libgl1 libgl1:i386 libegl1 libegl1:i386 \
         libgl1-mesa-dri libgl1-mesa-dri:i386 libglx-mesa0 libglx-mesa0:i386 \
         ca-certificates procps \
     && rm -rf /var/lib/apt/lists/*
+
+# VirtualGL redirects the game's OpenGL rendering to a GPU render node while
+# it keeps drawing into the Xvfb window, which has no hardware GL of its own.
+# Only used when the container is started with a GPU device (see GPU_DEVICE).
+# Debian does not package it; the upstream packages are pinned by checksum.
+ADD --checksum=sha256:df3f7788ce41b182a47c0d298e5cd6d2d63579522cb41825970b7726e825485e \
+    https://github.com/VirtualGL/virtualgl/releases/download/3.1.5/virtualgl_3.1.5_amd64.deb \
+    /tmp/virtualgl.deb
+ADD --checksum=sha256:7dc63ecb47d7ab9cb486bb21a9a968dee853380da760cc7f36f616d09ec62b9e \
+    https://github.com/VirtualGL/virtualgl/releases/download/3.1.5/virtualgl32_3.1.5_amd64.deb \
+    /tmp/virtualgl32.deb
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        /tmp/virtualgl.deb /tmp/virtualgl32.deb \
+    && rm -rf /var/lib/apt/lists/* /tmp/virtualgl.deb /tmp/virtualgl32.deb
 
 # Sidecar runtime dependencies (the sidecar itself is copied at the end)
 RUN pip install --no-cache-dir python-xlib numpy

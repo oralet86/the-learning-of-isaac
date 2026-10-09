@@ -12,9 +12,24 @@ import subprocess
 logger = logging.getLogger(__name__)
 
 _EXECUTABLE = "isaac-ng.exe"
+# Command name the kernel reports for the running game process.
+GAME_PROCESS_NAME = _EXECUTABLE
 _SAVE_RELATIVE_DIR = Path("Documents", "My Games", "Binding of Isaac Repentance+")
 _SAVE_SLOT_FILE = "persistentgamedata1.dat"
 _STOP_TIMEOUT_S = 10.0
+
+# VirtualGL's name for the first EGL device. A container only sees the render
+# node it was given (and no matching card node, so VirtualGL cannot look the
+# device up by path), which makes the first device the GPU that was passed in.
+_VGL_FIRST_EGL_DEVICE = "egl"
+
+# Mesa settings for rendering on the CPU. Two rasteriser threads per game is
+# the measured sweet spot for running several games side by side.
+_SOFTWARE_RENDERING_ENV: dict[str, str] = {
+    "LIBGL_ALWAYS_SOFTWARE": "1",
+    "GALLIUM_DRIVER": "llvmpipe",
+    "LP_NUM_THREADS": "2",
+}
 
 # Settings forced on every launch. Keys left out keep the game's defaults,
 # which it writes back into the file on start.
@@ -29,8 +44,23 @@ _FIXED_OPTIONS: dict[str, str] = {
     "PopUps": "0",
     "SteamCloud": "0",
     "VSync": "0",
-    # Pre-accept the first-run beta notice, which would otherwise swallow the
-    # menu script's key presses. The key name is tied to the game version.
+    # The game's only graphics-quality settings. At the default window size
+    # it renders at scale 1 either way; pinning them keeps a larger window
+    # from upscaling or filtering.
+    "Filter": "0",
+    "MaxRenderScale": "1",
+    # Features the agent never uses. None of them changes the game's CPU use
+    # measurably; they are off so they cannot put anything on screen.
+    "EnableEpicOverlay": "0",
+    "EosCrossplay": "0",
+    "OnlineHud": "0",
+    "ControllerHotplug": "0",
+    "RumbleEnabled": "0",
+    "MouseControl": "0",
+    "EnableDebugConsole": "0",
+    # First-run notices would otherwise sit on top of the menus, which the
+    # navigator would not recognise. The beta one is tied to the game version.
+    "AcceptedDataCollectionDisclaimer": "1",
     "AcceptedPublicBeta_v1.9.7.17": "1",
 }
 
@@ -97,16 +127,36 @@ def write_options(path: Path, width: int, height: int) -> None:
     path.write_text(render_options(width, height))
 
 
+def launch_spec(gpu_device: Path | None) -> tuple[list[str], dict[str, str]]:
+    """Return the command and extra environment that start the game.
+
+    Args:
+        gpu_device: DRM render node to render on, or ``None`` for software
+            rendering.
+
+    Returns:
+        ``(command, extra_env)``. With a GPU the game runs under VirtualGL,
+        which sends its OpenGL calls to that device; otherwise Mesa is told
+        to rasterise on the CPU.
+    """
+    if gpu_device is not None:
+        return ["vglrun", "-d", _VGL_FIRST_EGL_DEVICE, "wine", _EXECUTABLE], {}
+    return ["wine", _EXECUTABLE], dict(_SOFTWARE_RENDERING_ENV)
+
+
 class GameProcess:
     """Owns the Wine process running the game."""
 
-    def __init__(self, game_dir: Path) -> None:
+    def __init__(self, game_dir: Path, gpu_device: Path | None = None) -> None:
         """Remember where the game lives; nothing is started yet.
 
         Args:
             game_dir: Directory containing ``isaac-ng.exe``.
+            gpu_device: DRM render node to render on; ``None`` for software
+                rendering.
         """
         self._game_dir = game_dir
+        self._gpu_device = gpu_device
         self._process: subprocess.Popen[bytes] | None = None
 
     @property
@@ -126,12 +176,18 @@ class GameProcess:
         executable = self._game_dir / _EXECUTABLE
         if not executable.is_file():
             raise FileNotFoundError(executable)
-        logger.info("launching %s", executable)
+        if self._gpu_device is not None and not self._gpu_device.exists():
+            raise FileNotFoundError(
+                f"GPU device {self._gpu_device} is not present in the container"
+            )
+        command, extra_env = launch_spec(self._gpu_device)
+        logger.info("launching %s with: %s", executable, " ".join(command))
         # A new session gives the game its own process group, so stop() can
         # signal Wine and its children without touching the sidecar.
         self._process = subprocess.Popen(
-            ["wine", _EXECUTABLE],
+            command,
             cwd=self._game_dir,
+            env={**os.environ, **extra_env},
             start_new_session=True,
         )
 

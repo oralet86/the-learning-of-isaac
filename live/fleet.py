@@ -32,6 +32,8 @@ class FleetConfig:
             published on ``base_port + i``.
         game_width: Game window width requested in every container.
         game_height: Game window height requested in every container.
+        gpu_device: Host DRM render node (e.g. ``/dev/dri/renderD129``) every
+            game renders on; ``None`` for software rendering on the CPU.
         runtime: Container CLI to invoke.
         name_prefix: Container names are ``<name_prefix>-<index>``.
         ready_timeout_s: How long to wait for every sidecar to accept
@@ -43,6 +45,7 @@ class FleetConfig:
     base_port: int = DEFAULT_BASE_PORT
     game_width: int = DEFAULT_GAME_WIDTH
     game_height: int = DEFAULT_GAME_HEIGHT
+    gpu_device: str | None = None
     runtime: str = DEFAULT_RUNTIME
     name_prefix: str = "tloi-env"
     ready_timeout_s: float = 180.0
@@ -103,12 +106,20 @@ class ContainerFleet:
                 f"GAME_WIDTH={config.game_width}",
                 "--env",
                 f"GAME_HEIGHT={config.game_height}",
+                *self._gpu_arguments(),
                 config.image,
             ]
             subprocess.run(command, check=True, capture_output=True, text=True)
             self._started.append(name)
             logger.info("started container %s on port %d", name, port)
         self._wait_ready()
+
+    def _gpu_arguments(self) -> list[str]:
+        """Container arguments that hand the GPU render node to a game."""
+        device = self._config.gpu_device
+        if device is None:
+            return []
+        return ["--device", device, "--env", f"GPU_DEVICE={device}"]
 
     def stop(self) -> None:
         """Stop and remove every container this fleet started."""

@@ -35,7 +35,7 @@ KEYSYM_NAMES: dict[str, str] = {
     "tab": "Tab",
     "ctrl": "Control_L",
     "enter": "Return",
-    "escape": "Escape",
+    "p": "p",
     "r": "r",
 }
 
